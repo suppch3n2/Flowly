@@ -3,6 +3,7 @@ import * as L from './logic.js';
 import { loadState, saveState, storageAvailable, loadUi, saveUi } from './store.js';
 import { icon } from './icons.js';
 import { areaChart, attachAreaScrub, barChart, donutChart } from './charts.js';
+import * as Lock from './lock.js';
 
 const esc = L.escapeHtml;
 const money = L.formatMoney;
@@ -537,7 +538,7 @@ function confirmDialog({ title, message, confirmLabel = 'Bestätigen', danger = 
           <button type="button" class="btn ${danger ? 'danger solid' : 'primary'}" data-res="1">${esc(confirmLabel)}</button>
         </div>
       </div>`;
-    $('#overlay-root').appendChild(wrap);
+    document.body.appendChild(wrap);
     lockScroll();
     requestAnimationFrame(() => requestAnimationFrame(() => wrap.classList.add('open')));
     wrap.addEventListener('click', (e) => {
@@ -814,13 +815,28 @@ function openSettingsSheet() {
 
       <h3 class="section-title" style="margin-bottom:0">Daten</h3>
       <div class="settings-group">
-        <button type="button" class="settings-row" id="s-export"><span class="ri">${icon('download', 18)}</span><span class="main">Backup exportieren<span class="sub">Alle Daten als JSON-Datei sichern</span></span></button>
+        <button type="button" class="settings-row" id="s-export"><span class="ri">${icon('download', 18)}</span><span class="main">Backup exportieren<span class="sub">Als JSON-Datei auf diesem Gerät speichern (Dateien › Downloads)</span></span></button>
         <button type="button" class="settings-row" id="s-import"><span class="ri">${icon('upload', 18)}</span><span class="main">Backup importieren<span class="sub">Ersetzt die aktuellen Daten</span></span></button>
         <button type="button" class="settings-row" id="s-sample"><span class="ri">${icon('database', 18)}</span><span class="main">Beispieldaten laden<span class="sub">Zum Ausprobieren – ersetzt die aktuellen Daten</span></span></button>
         <button type="button" class="settings-row danger" id="s-wipe"><span class="ri">${icon('trash', 18)}</span><span class="main">Alle Daten löschen<span class="sub">Kann nicht rückgängig gemacht werden</span></span></button>
       </div>
       <input type="file" id="s-file" accept="application/json,.json" hidden>
-      <p class="settings-note">${icon('lock', 14, 'inline')} Flowly speichert alles nur lokal auf diesem Gerät.<br>Version 1.0</p>`,
+
+      <h3 class="section-title" style="margin-bottom:0">Sicherheit</h3>
+      <div class="settings-group">
+        <button type="button" class="settings-row" id="s-lock" ${Lock.lockSupported ? '' : 'disabled'}><span class="ri">${icon('lock', 18)}</span><span class="main">App-Sperre mit PIN<span class="sub" id="s-lock-state">${lockStateText()}</span></span>${icon('chevronRight', 18)}</button>
+      </div>
+
+      <div class="privacy-card">
+        <div class="privacy-head">${icon('lock', 18)}<strong>Deine Daten bleiben bei dir</strong></div>
+        <ul>
+          <li>Alles wird nur lokal in diesem Browser auf deinem Gerät gespeichert.</li>
+          <li>Kein Server, kein Konto, kein Tracking, keine Analytics, keine Cookies.</li>
+          <li>Flowly baut keine Verbindungen zu fremden Diensten auf.</li>
+          <li>Backups werden nur als Datei auf deinem Gerät abgelegt – nie hochgeladen.</li>
+        </ul>
+      </div>
+      <p class="settings-note">Flowly · Version 1.1</p>`,
     onMount(sheet, close) {
       const startInput = $('#s-start', sheet);
       amountInputHandler(startInput);
@@ -839,6 +855,12 @@ function openSettingsSheet() {
       });
 
       $('#s-export', sheet).addEventListener('click', exportBackup);
+      $('#s-lock', sheet).addEventListener('click', () =>
+        openLockSettings(() => {
+          const el = $('#s-lock-state', sheet);
+          if (el) el.textContent = lockStateText();
+        }),
+      );
 
       const file = $('#s-file', sheet);
       $('#s-import', sheet).addEventListener('click', () => file.click());
@@ -884,13 +906,14 @@ function openSettingsSheet() {
       $('#s-wipe', sheet).addEventListener('click', async () => {
         const ok = await confirmDialog({
           title: 'Alle Daten löschen?',
-          message: 'Alle Buchungen, Budgets, Sparziele und Einstellungen werden unwiderruflich von diesem Gerät entfernt.',
+          message: 'Alle Buchungen, Budgets, Sparziele, Einstellungen und die PIN-Sperre werden unwiderruflich von diesem Gerät entfernt.',
           confirmLabel: 'Alles löschen',
           danger: true,
         });
         if (!ok) return;
         state.data = L.createEmptyState();
         state.month = currentMonth();
+        Lock.clearPin();
         close();
         commit('Alle Daten gelöscht');
       });
@@ -898,30 +921,22 @@ function openSettingsSheet() {
   });
 }
 
-async function exportBackup() {
+/* Backup wird ausschließlich als Datei auf dem Gerät gespeichert – kein Teilen, kein Upload. */
+function exportBackup() {
   const payload = { app: 'Flowly', version: 1, exportedAt: new Date().toISOString(), data: state.data };
   const json = JSON.stringify(payload, null, 2);
   const filename = `flowly-backup-${L.todayISO()}.json`;
-  try {
-    const file = new File([json], filename, { type: 'application/json' });
-    if (navigator.canShare?.({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'Flowly-Backup' });
-      toast('Backup erstellt');
-      return;
-    }
-  } catch (err) {
-    if (err?.name === 'AbortError') return;
-  }
   try {
     const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
+    a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
-    toast('Backup heruntergeladen');
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toast('Backup gespeichert');
   } catch {
     toast('Export nicht möglich', true);
   }
@@ -1019,7 +1034,7 @@ window.addEventListener('scroll', () => topbar.classList.toggle('scrolled', wind
 
 // Datenänderungen in einem anderen Tab übernehmen
 window.addEventListener('storage', (e) => {
-  if (e.key && e.key.startsWith('flowly:data')) {
+  if (unlocked && e.key && e.key.startsWith('flowly:data')) {
     state.data = loadState();
     render();
   }
@@ -1028,7 +1043,7 @@ window.addEventListener('storage', (e) => {
 // Beim Zurückkehren in die App: Monat aktualisieren (z. B. nach Monatswechsel)
 let lastSeenMonth = currentMonth();
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
+  if (document.visibilityState !== 'visible' || !unlocked) return;
   const now = currentMonth();
   if (now !== lastSeenMonth) {
     if (state.month === lastSeenMonth) state.month = now;
@@ -1037,7 +1052,231 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-render();
+/* ---------- App-Sperre (PIN) ---------- */
+
+function lockStateText() {
+  if (!Lock.lockSupported) return 'In diesem Browser nicht verfügbar';
+  return Lock.isLockEnabled() ? 'An – PIN beim Öffnen' : 'Aus';
+}
+
+/**
+ * Ziffernblock für die PIN-Eingabe.
+ * onSubmit(pin) liefert true (fertig), einen Fehlertext (nochmal) oder ein Objekt { title, subtitle } (nächster Schritt).
+ */
+function createPinPad(host, { title, subtitle = '', onSubmit, extra = '' }) {
+  host.innerHTML = `<div class="pin">
+    <div class="pin-title">${esc(title)}</div>
+    <div class="pin-sub">${esc(subtitle)}</div>
+    <div class="pin-dots" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+    <div class="pin-msg" role="alert"></div>
+    <div class="pin-pad">
+      ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button type="button" class="pin-key" data-key="${n}">${n}</button>`).join('')}
+      <span class="pin-extra">${extra}</span>
+      <button type="button" class="pin-key" data-key="0">0</button>
+      <button type="button" class="pin-key fn" data-key="del" aria-label="Löschen">${icon('chevronLeft', 26)}</button>
+    </div>
+  </div>`;
+  const dots = host.querySelectorAll('.pin-dots span');
+  const msg = $('.pin-msg', host);
+  const box = $('.pin', host);
+  let pin = '';
+  let busy = false;
+  const paint = () => dots.forEach((d, i) => d.classList.toggle('on', i < pin.length));
+  const fail = (text) => {
+    msg.textContent = text;
+    box.classList.remove('shake');
+    void box.offsetWidth;
+    box.classList.add('shake');
+    navigator.vibrate?.(80);
+    pin = '';
+    paint();
+  };
+  const press = async (key) => {
+    if (busy) return;
+    if (key === 'del') pin = pin.slice(0, -1);
+    else if (pin.length < 4) pin += key;
+    paint();
+    if (pin.length < 4) return;
+    busy = true;
+    const res = await onSubmit(pin);
+    busy = false;
+    if (res === true) return;
+    if (typeof res === 'string') return fail(res);
+    if (res && res.title) {
+      $('.pin-title', host).textContent = res.title;
+      $('.pin-sub', host).textContent = res.subtitle || '';
+      msg.textContent = '';
+      pin = '';
+      paint();
+    }
+  };
+  box.addEventListener('click', (e) => {
+    const k = e.target.closest('[data-key]');
+    if (k) press(k.dataset.key);
+  });
+  return { press, setMessage: (t) => (msg.textContent = t) };
+}
+
+let unlocked = !Lock.isLockEnabled();
+let lockEl = null;
+
+function lockKeyHandler(e) {
+  if (!lockEl || document.querySelector('.dialog-wrap')) return;
+  if (/^\d$/.test(e.key)) lockEl._pad.press(e.key);
+  else if (e.key === 'Backspace') lockEl._pad.press('del');
+}
+
+function showLockScreen() {
+  unlocked = false;
+  document.body.classList.add('is-locked');
+  if (lockEl) return;
+  lockEl = document.createElement('div');
+  lockEl.className = 'lock-screen';
+  lockEl.setAttribute('role', 'dialog');
+  lockEl.setAttribute('aria-modal', 'true');
+  lockEl.setAttribute('aria-label', 'Flowly ist gesperrt');
+  lockEl.innerHTML = `<div class="lock-logo">${icon('trend', 30)}</div><div class="lock-host"></div>
+    <button type="button" class="lock-forgot">PIN vergessen?</button>`;
+  document.body.appendChild(lockEl);
+  const pad = createPinPad($('.lock-host', lockEl), {
+    title: 'Flowly ist gesperrt',
+    subtitle: 'Gib deine PIN ein',
+    async onSubmit(pin) {
+      const res = await Lock.verifyPin(pin);
+      if (res.ok) {
+        hideLockScreen();
+        return true;
+      }
+      if (res.wait) return `Zu viele Versuche. Bitte ${res.wait} Sekunden warten.`;
+      return `Falsche PIN – noch ${res.left} ${res.left === 1 ? 'Versuch' : 'Versuche'} bis zur Wartezeit`;
+    },
+  });
+  lockEl._pad = pad;
+  const wait = Lock.lockoutRemaining();
+  if (wait) pad.setMessage(`Zu viele Versuche. Bitte ${wait} Sekunden warten.`);
+  $('.lock-forgot', lockEl).addEventListener('click', async () => {
+    const ok = await confirmDialog({
+      title: 'PIN vergessen?',
+      message: 'Die PIN kann nicht wiederhergestellt werden – sie ist nirgends gespeichert außer als Prüfwert auf diesem Gerät. Du kannst nur alle Daten löschen und neu beginnen.',
+      confirmLabel: 'Alles löschen',
+      danger: true,
+    });
+    if (!ok) return;
+    state.data = L.createEmptyState();
+    saveState(state.data);
+    Lock.clearPin();
+    hideLockScreen();
+    toast('Daten und PIN gelöscht');
+  });
+  document.addEventListener('keydown', lockKeyHandler);
+}
+
+function hideLockScreen() {
+  unlocked = true;
+  document.body.classList.remove('is-locked', 'privacy-cover');
+  document.removeEventListener('keydown', lockKeyHandler);
+  if (lockEl) {
+    const el = lockEl;
+    lockEl = null;
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 320);
+  }
+  render();
+}
+
+// Beim Wechsel in den Hintergrund sofort verdecken (auch im App-Umschalter),
+// nach mehr als 15 Sekunden im Hintergrund wieder PIN abfragen.
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (!Lock.isLockEnabled()) return;
+  if (document.visibilityState === 'hidden') {
+    hiddenAt = Date.now();
+    if (unlocked) document.body.classList.add('privacy-cover');
+  } else if (unlocked) {
+    if (Date.now() - hiddenAt > 15000) showLockScreen();
+    document.body.classList.remove('privacy-cover');
+  }
+});
+
+function openLockSettings(onChange) {
+  const enabled = Lock.isLockEnabled();
+  openSheet({
+    title: enabled ? 'App-Sperre' : 'PIN festlegen',
+    body: `<div id="pin-host"></div>
+      <p class="settings-note" id="pin-note">${enabled ? 'Zum Ändern oder Deaktivieren erst die aktuelle PIN eingeben.' : 'Flowly fragt diese PIN bei jedem Öffnen ab. Sie wird nur als Prüfwert auf diesem Gerät gespeichert.'}</p>`,
+    onMount(sheet, close) {
+      const host = $('#pin-host', sheet);
+      const newPinFlow = (doneText) => {
+        let first = null;
+        createPinPad(host, {
+          title: 'Neue PIN eingeben',
+          subtitle: '4 Ziffern',
+          async onSubmit(pin) {
+            if (!first) {
+              first = pin;
+              return { title: 'PIN bestätigen', subtitle: 'Gib dieselbe PIN noch einmal ein' };
+            }
+            if (pin !== first) {
+              first = null;
+              setTimeout(() => {
+                $('.pin-title', host).textContent = 'Neue PIN eingeben';
+                $('.pin-sub', host).textContent = '4 Ziffern';
+              }, 0);
+              return 'Die PINs stimmen nicht überein. Bitte neu beginnen.';
+            }
+            try {
+              await Lock.setPin(pin);
+            } catch (err) {
+              return err.message;
+            }
+            unlocked = true;
+            close();
+            onChange?.();
+            toast(doneText);
+            return true;
+          },
+        });
+      };
+
+      if (!enabled) return newPinFlow('App-Sperre aktiviert');
+
+      createPinPad(host, {
+        title: 'Aktuelle PIN',
+        subtitle: 'Zur Bestätigung',
+        async onSubmit(pin) {
+          const res = await Lock.verifyPin(pin);
+          if (!res.ok) return res.wait ? `Zu viele Versuche. Bitte ${res.wait} Sekunden warten.` : 'Falsche PIN';
+          $('#pin-note', sheet).remove();
+          host.innerHTML = `<div class="stack">
+            <button type="button" class="btn block" id="pin-change">${icon('pencil', 20)}PIN ändern</button>
+            <button type="button" class="btn danger block" id="pin-off">${icon('lock', 20)}App-Sperre deaktivieren</button>
+          </div>`;
+          $('#pin-change', host).addEventListener('click', () => newPinFlow('PIN geändert'));
+          $('#pin-off', host).addEventListener('click', () => {
+            Lock.clearPin();
+            close();
+            onChange?.();
+            toast('App-Sperre deaktiviert');
+          });
+          return true;
+        },
+      });
+    },
+  });
+}
+
+// Browser bitten, die lokalen Daten nicht automatisch zu löschen
+try {
+  navigator.storage?.persist?.().catch(() => {});
+} catch {
+  /* optional */
+}
+
+if (unlocked) render();
+else {
+  renderTabbar();
+  showLockScreen();
+}
 
 /* ---------- Service Worker ---------- */
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {

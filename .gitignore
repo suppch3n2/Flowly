@@ -1,0 +1,6 @@
+# Datenschutz: Backups und Datenexporte niemals ins Repository
+flowly-backup-*.json
+*backup*.json
+*.backup
+node_modules/
+.DS_Store

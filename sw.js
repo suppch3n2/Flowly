@@ -11,6 +11,7 @@ const ASSETS = [
   './js/store.js',
   './js/icons.js',
   './js/charts.js',
+  './js/lock.js',
   './fonts/inter-latin.woff2',
   './fonts/space-grotesk-latin.woff2',
   './icons/apple-touch-icon.png',

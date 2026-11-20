@@ -487,7 +487,7 @@ export function generateSampleData(today = todayISO(), name = '') {
     const shoppingCount = 1 + Math.floor(rnd() * 2);
     for (let i = 0; i < shoppingCount; i++) add(6 + Math.floor(rnd() * 20), 'expense', 'shopping', between(18, 95), pick(shopping));
     if (rnd() > 0.5) add(7 + Math.floor(rnd() * 18), 'expense', 'gesundheit', between(8, 35), pick(['Apotheke', 'Zahnreinigung', 'Physiotherapie']));
-    if (rnd() > 0.6) add(5 + Math.floor(rnd() * 20), 'expense', 'sonstiges', between(10, 40), pick(['Geschenk für Lea', 'Spende', 'Haarschnitt']));
+    if (rnd() > 0.6) add(5 + Math.floor(rnd() * 20), 'expense', 'sonstiges', between(10, 40), pick(['Geschenk für Freunde', 'Spende', 'Haarschnitt']));
   }
   // Ein Shopping-Ausreißer im aktuellen Monat, damit eine Budgetwarnung sichtbar wird
   const dayNow = Number(today.slice(8, 10));
