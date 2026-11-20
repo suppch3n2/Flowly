@@ -166,9 +166,10 @@ function renderStart() {
   const series = L.balanceSeries(transactions, settings.startBalance, nowKey, 12);
   series[series.length - 1] = { key: nowKey, value: balance };
   const limit = settings.monthlyLimit ? L.limitForMonth(settings, nowKey) : 0;
-  const spent = L.monthSummary(transactions, nowKey).expense;
-  const rest = limit - spent;
-  const tone = settings.monthlyLimit ? (rest < 0 ? 'neg' : 'pos') : 'plain';
+  const month = L.monthSummary(transactions, nowKey);
+  // Mit Limit: Rest vom Limit. Ohne Limit: Plus/Minus des Monats. Immer nur Vorzeichen + Zahl.
+  const delta = settings.monthlyLimit ? limit - month.expense : month.net;
+  const tone = delta < 0 ? 'neg' : 'pos';
   const recent = L.sortTransactions(transactions.filter((t) => t.date <= today)).slice(0, 8);
   const name = settings.name.trim();
 
@@ -176,10 +177,8 @@ function renderStart() {
     <section class="hero ${tone}" id="hero">
       <div class="hero-label" id="hero-label">${esc(name ? `${L.greeting()}, ${name}` : L.greeting())}</div>
       <div class="hero-value" id="hero-value">${money(balance)}</div>
-      ${settings.monthlyLimit
-        ? `<button type="button" class="hero-delta" data-action="edit-limit" aria-label="Rest vom Ausgaben-Limit, antippen zum Ändern">${money(rest, { signed: true })}</button>`
-        : `<button type="button" class="hero-delta set" data-action="edit-limit">${icon('plus', 14)} Ausgaben-Limit festlegen</button>`}
-      ${areaChart(series, series.length - 1, tone === 'pos' ? '#6EE7B7' : tone === 'neg' ? '#F87171' : '#8B7CF6')}
+      <button type="button" class="hero-delta" data-action="edit-limit" aria-label="${settings.monthlyLimit ? 'Rest vom Ausgaben-Limit' : 'Plus oder Minus in diesem Monat'}, antippen zum Ändern des Limits">${money(delta, { signed: true })}</button>
+      ${areaChart(series, series.length - 1, tone === 'pos' ? '#6EE7B7' : '#F87171')}
     </section>
 
     ${settings.hideImport ? '' : importCard()}
@@ -2115,9 +2114,31 @@ else {
   showLockScreen();
 }
 
-/* ---------- Service Worker ---------- */
+/* ---------- Service Worker & Updates ---------- */
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  const hadController = !!navigator.serviceWorker.controller;
+  let pendingReload = false;
+  const reloadNow = () => {
+    // Nicht mitten in einer Eingabe neu laden – dann beim nächsten Verlassen der App
+    if (document.querySelector('.sheet-wrap, .dialog-wrap')) pendingReload = true;
+    else location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) reloadNow();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && pendingReload) location.reload();
+  });
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch((err) => console.warn('Service Worker nicht registriert', err));
+    navigator.serviceWorker
+      .register('./sw.js', { scope: './', updateViaCache: 'none' })
+      .then((reg) => {
+        const check = () => reg.update().catch(() => {});
+        check();
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') check();
+        });
+      })
+      .catch((err) => console.warn('Service Worker nicht registriert', err));
   });
 }
