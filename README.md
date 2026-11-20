@@ -6,8 +6,9 @@ Finanz-App als Progressive Web App, optimiert fürs iPhone. Reines HTML, CSS und
 
 ## Funktionen
 
-- **Übersicht:** Gesamtvermögen mit Verlaufskurve (zum Wischen), Einnahmen/Ausgaben/Sparquote, Balkendiagramm der letzten 6 Monate, Ringdiagramm nach Kategorie, letzte Buchungen
-- **Buchungen:** nach Datum gruppiert, Filter, Suche, Bearbeiten/Löschen
+- **Aufbau:** oben Reiter als Pillen (Start · Zahlen · Budgets · Ziele · Einstellungen), auf Start der Kontostand groß mit Rest vom Ausgaben-Limit (+ grün / − rot) und die letzten Umsätze, unten Suche und Plus
+
+- **Zahlen:** Einnahmen/Ausgaben/Sparquote, Limit, Balkendiagramm der letzten 6 Monate, Ringdiagramm nach Kategorie, alle Umsätze nach Datum mit Filter; Suche über die Leiste unten
 - **Budgets:** Monatslimit pro Kategorie, Warnfarbe ab 90 % und über 100 %
 - **Sparziele:** anlegen, Geld hinzufügen, löschen
 - **Einstellungen:** Name, Startguthaben, JSON-Backup exportieren/importieren, alle Daten löschen

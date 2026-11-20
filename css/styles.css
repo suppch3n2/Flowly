@@ -825,3 +825,133 @@ select.input { background-image: linear-gradient(45deg, transparent 50%, var(--m
 .seg3 .thumb { transition: transform 0.32s var(--ease); }
 .limit-diff { font-size: 16px; }
 .limit-card.pos .limit-value, .limit-card.neg .limit-value { font-size: 32px; }
+
+/* ======================================================================
+   Layout 2.0 – Pillen oben, großer Kontostand, Kacheln, Suche unten
+   ====================================================================== */
+:root { --tabbar-h: 76px; --pill-on: #B3A8FA; --pill-on-text: #140F2E; }
+
+.topbar { justify-content: flex-start; gap: 10px; padding: calc(var(--sat) + 8px) 16px 10px; }
+.avatar {
+  width: 44px; height: 44px; flex: none; border-radius: 50%;
+  display: grid; place-items: center;
+  background: linear-gradient(140deg, #9D90F8, #5BC0EB);
+  color: #fff; font-family: var(--font-display); font-weight: 700; font-size: 19px;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 2px transparent;
+  transition: transform 0.15s var(--ease), box-shadow 0.25s;
+}
+.avatar.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.avatar:active { transform: scale(0.92); }
+.pills {
+  display: flex; gap: 8px; flex: 1; min-width: 0; padding: 2px 24px 2px 2px;
+  overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  -webkit-mask-image: linear-gradient(to right, #000 82%, transparent);
+  mask-image: linear-gradient(to right, #000 82%, transparent);
+}
+.pills::-webkit-scrollbar { display: none; }
+.pill-tab {
+  flex: none; height: 44px; padding: 0 18px; border-radius: 999px;
+  background: #191D27; color: var(--muted); font-weight: 600; font-size: 15px;
+  transition: background 0.25s, color 0.25s, transform 0.15s var(--ease);
+}
+.pill-tab[aria-current="page"] { background: var(--pill-on); color: var(--pill-on-text); }
+.pill-tab:active { transform: scale(0.95); }
+
+.view.active.from-right { animation: inRight 0.34s var(--ease) both; }
+.view.active.from-left { animation: inLeft 0.34s var(--ease) both; }
+@keyframes inRight { from { opacity: 0; transform: translateX(22px); } to { opacity: 1; transform: none; } }
+@keyframes inLeft { from { opacity: 0; transform: translateX(-22px); } to { opacity: 1; transform: none; } }
+
+/* Großer Kontostand */
+.hero {
+  position: relative; overflow: hidden; text-align: center;
+  padding: 26px 20px 12px; border-radius: 28px;
+  background: radial-gradient(120% 80% at 50% 0%, rgba(139, 124, 246, 0.16), transparent 65%), var(--card);
+  border: 1px solid var(--border);
+}
+.hero.pos { background: radial-gradient(120% 80% at 50% 0%, rgba(110, 231, 183, 0.13), transparent 65%), var(--card); }
+.hero.neg { background: radial-gradient(120% 80% at 50% 0%, rgba(248, 113, 113, 0.14), transparent 65%), var(--card); }
+.hero-label { color: var(--muted); font-size: 14px; font-weight: 500; min-height: 20px; }
+.hero-value {
+  margin-top: 6px; font-family: var(--font-display); font-weight: 700;
+  font-size: clamp(40px, 13vw, 58px); letter-spacing: -0.035em; line-height: 1.05;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.hero.pos .hero-value { color: var(--positive); }
+.hero.neg .hero-value { color: var(--danger); }
+.hero-delta {
+  margin-top: 10px; min-height: 36px; padding: 4px 16px; border-radius: 999px;
+  font-weight: 600; font-size: 18px; font-variant-numeric: tabular-nums;
+  transition: transform 0.15s var(--ease);
+}
+.hero-delta:active { transform: scale(0.95); }
+.hero.pos .hero-delta { color: var(--positive); background: rgba(110, 231, 183, 0.1); }
+.hero.neg .hero-delta { color: var(--danger); background: rgba(248, 113, 113, 0.12); }
+.hero-delta.set { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--accent); background: rgba(139, 124, 246, 0.12); }
+.hero .area-chart { margin: 16px -20px 0; }
+.hero .area-plot { height: 96px; }
+.hero .area-labels { margin: 8px 20px 0; }
+
+/* Überschrift „Letzte Umsätze ›“ */
+.section-link {
+  display: inline-flex; align-items: center; gap: 2px; min-height: 44px; margin: 6px 0 6px;
+  font-family: var(--font-display); font-size: 22px; font-weight: 700; letter-spacing: -0.02em; color: var(--text);
+}
+.section-link .ico { color: var(--muted); transition: transform 0.2s var(--ease); }
+.section-link:active .ico { transform: translateX(3px); }
+.section-link.static { display: block; margin-top: 10px; }
+
+/* Umsätze als einzelne Kacheln */
+.tx-list.tiles { display: grid; gap: 8px; }
+.row.tile {
+  margin: 0; width: 100%; min-height: 70px; padding: 12px 16px 12px 12px;
+  border-radius: 20px; background: var(--card); border: 1px solid var(--border);
+}
+.row.tile:active { background: var(--card-2); transform: scale(0.98); }
+.row.tile .cat-icon { width: 46px; height: 46px; border-radius: 50%; }
+.row.tile .title { font-size: 16px; }
+.amount.out { color: var(--danger); }
+.amount.in { color: var(--positive); }
+.day-group .tx-list.tiles { margin-top: 2px; }
+
+/* Untere Leiste: Suche + Plus */
+.tabbar.bottombar {
+  display: flex; align-items: center; gap: 12px; height: auto;
+  bottom: var(--kb, 0px);
+  padding: 14px calc(16px + var(--sar)) calc(10px + var(--sab)) calc(16px + var(--sal));
+  background: linear-gradient(to top, rgba(9, 11, 16, 0.98) 55%, rgba(9, 11, 16, 0));
+  border-top: 0; -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.search-pill {
+  flex: 1; min-width: 0; height: 54px; display: flex; align-items: center; gap: 10px;
+  padding: 0 4px 0 18px; border-radius: 999px; color: var(--muted);
+  background: rgba(26, 30, 40, 0.9); border: 1px solid #262C3A;
+  -webkit-backdrop-filter: saturate(160%) blur(20px); backdrop-filter: saturate(160%) blur(20px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  transition: border-color 0.2s;
+}
+.search-pill:focus-within { border-color: var(--accent); }
+.search-pill input { flex: 1; min-width: 0; height: 100%; background: none; border: 0; outline: none; -webkit-appearance: none; appearance: none; }
+.search-pill input::placeholder { color: var(--faint); }
+.search-pill input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+.search-clear { width: 44px; height: 44px; flex: none; border-radius: 50%; display: none; place-items: center; color: var(--muted); }
+.search-pill.has-value .search-clear { display: grid; }
+.tabbar.bottombar .fab {
+  width: 58px; height: 58px; margin: 0; flex: none;
+  background: var(--pill-on); color: var(--pill-on-text);
+  box-shadow: 0 12px 30px rgba(139, 124, 246, 0.45);
+}
+.tabbar.bottombar .fab:active { transform: scale(0.9) rotate(90deg); }
+
+.search-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 2px 2px 12px; color: var(--muted); font-weight: 600; }
+.search-head .link { color: var(--accent); font-weight: 600; min-height: 44px; }
+.settings-page > * + * { margin-top: 16px; }
+.settings-page .section-title { margin-bottom: 0; }
+.tx-list.tiles { grid-template-columns: minmax(0, 1fr); }
+.tx-list.tiles > li { min-width: 0; }
+.pills {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 28px), transparent);
+  padding-left: 8px; margin-left: -6px;
+}
+.views { overflow-x: clip; }

@@ -69,7 +69,7 @@ export function areaPoints(values) {
   });
 }
 
-export function areaChart(series, activeIndex = series.length - 1) {
+export function areaChart(series, activeIndex = series.length - 1, color = C.accent) {
   const pts = areaPoints(series.map((s) => s.value));
   const line = monotonePath(pts);
   const area = `${line}L${AREA_W},${AREA_H}L0,${AREA_H}Z`;
@@ -89,14 +89,14 @@ export function areaChart(series, activeIndex = series.length - 1) {
         <svg viewBox="0 0 ${AREA_W} ${AREA_H}" preserveAspectRatio="none" aria-hidden="true">
           <defs>
             <linearGradient id="nwFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="${C.accent}" stop-opacity="0.38"/>
-              <stop offset="1" stop-color="${C.accent}" stop-opacity="0"/>
+              <stop offset="0" stop-color="${color}" stop-opacity="0.32"/>
+              <stop offset="1" stop-color="${color}" stop-opacity="0"/>
             </linearGradient>
           </defs>
           <path d="${area}" fill="url(#nwFill)"/>
-          <path d="${line}" fill="none" stroke="${C.accent}" stroke-width="2.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+          <path d="${line}" fill="none" stroke="${color}" stroke-width="2.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
         </svg>
-        <div class="area-cursor" style="left:${r1((ax / AREA_W) * 100)}%"><span class="area-dot" style="top:${r1((ay / AREA_H) * 100)}%"></span></div>
+        <div class="area-cursor" style="left:${r1((ax / AREA_W) * 100)}%"><span class="area-dot" style="top:${r1((ay / AREA_H) * 100)}%;background:${color};box-shadow:0 0 0 3px var(--card),0 0 16px ${color}"></span></div>
       </div>
       <div class="area-labels">${labels}</div>
     </div>`;

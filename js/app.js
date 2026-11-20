@@ -14,16 +14,19 @@ const rememberSeen = L.rememberSeen;
 const $ = (sel, root = document) => root.querySelector(sel);
 
 const TABS = [
-  { id: 'overview', label: 'Übersicht', icon: 'overview' },
-  { id: 'transactions', label: 'Buchungen', icon: 'list' },
-  { id: 'budgets', label: 'Budgets', icon: 'pie' },
-  { id: 'goals', label: 'Sparziele', icon: 'target' },
+  { id: 'start', label: 'Start' },
+  { id: 'numbers', label: 'Zahlen' },
+  { id: 'budgets', label: 'Budgets' },
+  { id: 'goals', label: 'Ziele' },
+  { id: 'settings', label: 'Einstellungen' },
 ];
+const LEGACY_TABS = { overview: 'start', transactions: 'numbers' };
 
 const ui = loadUi();
+const savedTab = LEGACY_TABS[ui.tab] || ui.tab;
 const state = {
   data: loadState(),
-  tab: TABS.some((t) => t.id === ui.tab) ? ui.tab : 'overview',
+  tab: TABS.some((t) => t.id === savedTab) ? savedTab : 'start',
   month: L.monthKeyOf(L.todayISO()),
   txFilter: 'all',
   txQuery: '',
@@ -64,13 +67,22 @@ function txRow(t, { showDate = false } = {}) {
   const isIn = t.type === 'income';
   const title = t.note ? esc(t.note) : esc(cat.label);
   const subParts = [t.note ? cat.label : isIn ? 'Einnahme' : 'Ausgabe'];
-  if (showDate) subParts.push(L.dayLabel(t.date));
+  if (showDate) subParts.push(shortDay(t.date));
   if (t.src && SOURCE_LABEL[t.src]) subParts.push(SOURCE_LABEL[t.src]);
-  return `<li><button type="button" class="row" data-action="edit-tx" data-id="${esc(t.id)}">
+  return `<li><button type="button" class="row tile" data-action="edit-tx" data-id="${esc(t.id)}">
     ${catIcon(cat)}
     <span class="main"><span class="title">${title}</span><span class="sub">${esc(subParts.join(' · '))}</span></span>
     <span class="amount ${isIn ? 'in' : 'out'}">${money(isIn ? t.amount : -t.amount, { signed: true })}</span>
   </button></li>`;
+}
+
+/** Kurzes Datum für Kacheln: „Heute“, „Gestern“ oder „18. Nov“. */
+function shortDay(iso) {
+  const today = L.todayISO();
+  const label = L.dayLabel(iso, today);
+  if (label === 'Heute' || label === 'Gestern') return label;
+  const [y, , d] = iso.split('-');
+  return `${Number(d)}. ${L.monthShort(iso.slice(0, 7))}${y !== today.slice(0, 4) ? ` ${y}` : ''}`;
 }
 
 function emptyState({ title, text, art = 'sparkle', actions = '', small = false }) {
@@ -94,83 +106,142 @@ function startButtons() {
     <button type="button" class="btn block" data-action="load-sample">${icon('database', 20)}Beispieldaten laden</button>`;
 }
 
-/* ---------- Kopfzeile & Tabs ---------- */
+/* ---------- Kopfzeile, Pillen & untere Leiste ---------- */
 
 function renderTopbar() {
-  const el = $('#topbar-title');
-  if (state.tab === 'overview') {
-    const name = state.data.settings.name;
-    el.innerHTML = name
-      ? `<div class="hello">${esc(L.greeting())},</div><h1>${esc(name)}</h1>`
-      : `<div class="hello">${esc(L.greeting())}</div><h1>Willkommen</h1>`;
-  } else {
-    el.innerHTML = `<h1>${esc(TABS.find((t) => t.id === state.tab).label)}</h1>`;
+  const name = state.data.settings.name.trim();
+  $('#avatar').innerHTML = name ? `<span>${esc(name[0].toUpperCase())}</span>` : icon('trend', 20);
+  $('#avatar').classList.toggle('on', state.tab === 'settings');
+  const pills = $('#pills');
+  pills.innerHTML = TABS.map(
+    (t) => `<button type="button" class="pill-tab" data-action="tab" data-tab="${t.id}" ${state.tab === t.id ? 'aria-current="page"' : ''}>${t.label}</button>`,
+  ).join('');
+  const active = pills.querySelector('[aria-current="page"]');
+  if (active) {
+    const target = active.offsetLeft - (pills.clientWidth - active.offsetWidth) / 2;
+    pills.scrollTo({ left: Math.max(0, target), behavior: pills.dataset.ready ? 'smooth' : 'auto' });
+    pills.dataset.ready = '1';
   }
 }
 
 function renderTabbar() {
-  const tabBtn = (t) =>
-    `<button type="button" class="tab" data-action="tab" data-tab="${t.id}" ${state.tab === t.id ? 'aria-current="page"' : ''}>${icon(t.icon, 24)}<span>${t.label}</span></button>`;
-  $('#tabbar').innerHTML = `${tabBtn(TABS[0])}${tabBtn(TABS[1])}
-    <div class="fab-wrap"><button type="button" class="fab" data-action="open-add" aria-label="Buchung hinzufügen">${icon('plus', 30)}</button></div>
-    ${tabBtn(TABS[2])}${tabBtn(TABS[3])}`;
+  const input = $('#global-search');
+  if (input && document.activeElement !== input) input.value = state.txQuery;
+  $('#search-pill')?.classList.toggle('has-value', !!state.txQuery);
 }
 
+let lastTabIndex = 0;
 function switchTab(id) {
   if (id === state.tab) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
     return;
   }
   state.scroll[state.tab] = window.scrollY;
+  lastTabIndex = TABS.findIndex((t) => t.id === state.tab);
   state.tab = id;
   saveUi({ ...ui, tab: id });
   render();
   window.scrollTo(0, state.scroll[id] || 0);
 }
 
-/* ---------- Übersicht ---------- */
+/* ---------- Start ---------- */
 
-function renderOverview() {
+function renderStart() {
   const { transactions, settings } = state.data;
   if (!transactions.length) {
     return `<div class="stack">${emptyState({
       title: 'Willkommen bei Flowly',
       art: 'trend',
       text: settings.hideImport
-        ? 'Trage deine Einnahmen und Ausgaben über das große Plus ein – alles bleibt auf deinem iPhone.'
+        ? 'Trage deine Einnahmen und Ausgaben über das Plus unten ein – alles bleibt auf deinem iPhone.'
         : 'Importiere deine Zahlungen automatisch oder trage sie selbst ein – alles bleibt auf deinem iPhone.',
       actions: startButtons(),
     })}
-    ${!settings.name ? `<button type="button" class="card settings-row" data-action="open-settings" style="border-radius:18px"><span class="ri">${icon('user', 18)}</span><span class="main">Wie heißt du?<span class="sub">Name und Startguthaben in den Einstellungen festlegen</span></span>${icon('chevronRight', 18)}</button>` : ''}
+    ${!settings.name ? `<button type="button" class="card settings-row" data-action="tab" data-tab="settings" style="border-radius:18px"><span class="ri">${icon('user', 18)}</span><span class="main">Wie heißt du?<span class="sub">Name und Startguthaben in den Einstellungen festlegen</span></span>${icon('chevronRight', 18)}</button>` : ''}
     </div>`;
   }
+  const today = L.todayISO();
+  const nowKey = currentMonth();
+  const balance = L.balanceUntil(transactions, settings.startBalance, today);
+  const series = L.balanceSeries(transactions, settings.startBalance, nowKey, 12);
+  series[series.length - 1] = { key: nowKey, value: balance };
+  const limit = settings.monthlyLimit ? L.limitForMonth(settings, nowKey) : 0;
+  const spent = L.monthSummary(transactions, nowKey).expense;
+  const rest = limit - spent;
+  const tone = settings.monthlyLimit ? (rest < 0 ? 'neg' : 'pos') : 'plain';
+  const recent = L.sortTransactions(transactions.filter((t) => t.date <= today)).slice(0, 8);
+  const name = settings.name.trim();
 
+  return `<div class="stack">
+    <section class="hero ${tone}" id="hero">
+      <div class="hero-label" id="hero-label">${esc(name ? `${L.greeting()}, ${name}` : L.greeting())}</div>
+      <div class="hero-value" id="hero-value">${money(balance)}</div>
+      ${settings.monthlyLimit
+        ? `<button type="button" class="hero-delta" data-action="edit-limit" aria-label="Rest vom Ausgaben-Limit, antippen zum Ändern">${money(rest, { signed: true })}</button>`
+        : `<button type="button" class="hero-delta set" data-action="edit-limit">${icon('plus', 14)} Ausgaben-Limit festlegen</button>`}
+      ${areaChart(series, series.length - 1, tone === 'pos' ? '#6EE7B7' : tone === 'neg' ? '#F87171' : '#8B7CF6')}
+    </section>
+
+    ${settings.hideImport ? '' : importCard()}
+
+    <section>
+      <button type="button" class="section-link" data-action="tab" data-tab="numbers">Letzte Umsätze ${icon('chevronRight', 20)}</button>
+      <ul class="tx-list tiles">${recent.map((t) => txRow(t, { showDate: true })).join('')}</ul>
+    </section>
+  </div>`;
+}
+
+function mountStart(root) {
+  const chart = $('.area-chart', root);
+  if (!chart) return;
+  const { transactions, settings } = state.data;
+  const nowKey = currentMonth();
+  const series = L.balanceSeries(transactions, settings.startBalance, nowKey, 12);
+  series[series.length - 1] = { key: nowKey, value: L.balanceUntil(transactions, settings.startBalance, L.todayISO()) };
+  const label = $('#hero-label', root);
+  const value = $('#hero-value', root);
+  const baseLabel = label.textContent;
+  attachAreaScrub(chart, series, (i) => {
+    const last = i === series.length - 1;
+    label.textContent = last ? baseLabel : `Kontostand Ende ${L.monthLabel(series[i].key)}`;
+    value.textContent = money(series[i].value);
+  });
+}
+
+/* ---------- Zahlen ---------- */
+
+function renderNumbers() {
+  const { transactions } = state.data;
+  if (!transactions.length) {
+    return emptyState({
+      title: 'Noch keine Zahlen',
+      art: 'list',
+      text: 'Tippe unten rechts auf das Plus, um deine erste Einnahme oder Ausgabe einzutragen.',
+      actions: startButtons(),
+    });
+  }
   const month = state.month;
   const sum = L.monthSummary(transactions, month);
-  const series = L.balanceSeries(transactions, settings.startBalance, month, 12);
-  const current = series[series.length - 1];
   const bars = L.monthlySeries(transactions, month, 6);
   const cats = L.expensesByCategory(L.transactionsInMonth(transactions, month));
-  const recent = L.sortTransactions(transactions).slice(0, 5);
   const rate = sum.savingsRate;
   const ratePct = rate == null ? 0 : Math.max(0, Math.min(1, rate));
-  const isNow = month === currentMonth();
+  const filters = [
+    ['all', 'Alle'],
+    ['income', 'Einnahmen'],
+    ['expense', 'Ausgaben'],
+  ];
+  const idx = filters.findIndex((f) => f[0] === state.txFilter);
+  const rules = state.data.recurring;
+  const fix = rules.filter((r) => r.type === 'expense').reduce((acc, r) => acc + monthlyEquivalent(r), 0);
 
-  const netPill = sum.net === 0
-    ? `<span class="pill neutral">±0,00 € im ${esc(L.monthName(month))}</span>`
-    : `<span class="pill ${sum.net < 0 ? 'neg' : ''}">${icon(sum.net < 0 ? 'arrowOut' : 'trend', 14)}${money(sum.net, { signed: true })} im ${esc(L.monthName(month))}</span>`;
+  if (state.txQuery.trim()) {
+    return `<div class="search-head"><span>Suche: „${esc(state.txQuery.trim())}“</span><button type="button" class="link" data-action="clear-search">Fertig</button></div>
+      <div id="tx-results">${renderTxResults()}</div>`;
+  }
 
   return `<div class="stack">
     ${monthSwitcher()}
-
-    ${state.data.settings.hideImport ? '' : importCard()}
-
-    <section class="card networth" id="networth">
-      <div class="eyebrow" id="nw-label">Gesamtvermögen${isNow ? '' : ` · Ende ${esc(L.monthName(month))}`}</div>
-      <div class="big" id="nw-value">${money(current.value)}</div>
-      <div class="meta" id="nw-meta">${netPill}</div>
-      ${areaChart(series)}
-    </section>
 
     <div class="stats">
       <section class="card stat">
@@ -209,15 +280,25 @@ function renderOverview() {
         ? `<div class="donut-wrap">
             <div class="donut-box">${donutChart(cats)}<div class="donut-center"><span class="eyebrow">Gesamt</span><strong>${money(sum.expense)}</strong></div></div>
             <ul class="cat-legend">${cats
-              .map((c) => `<li><span class="dot" style="background:${c.color}"></span><span class="name">${esc(c.label)}</span><span class="val"><b>${L.formatEuroShort(c.amount)} €</b> · ${L.formatPercent(c.share)}</span></li>`)
+              .map((c) => `<li><span class="dot" style="background:${c.color}"></span><span class="name">${esc(c.label)}</span><span class="val"><b>${L.formatEuroShort(c.amount)}\u00A0€</b> · ${L.formatPercent(c.share)}</span></li>`)
               .join('')}</ul>
           </div>`
         : `<p class="muted" style="margin:0">Keine Ausgaben im ${esc(L.monthLabel(month))}.</p>`}
     </section>
 
-    <section class="card">
-      <div class="card-head"><h2>Letzte Buchungen</h2><button type="button" class="link" data-action="tab" data-tab="transactions">Alle anzeigen</button></div>
-      <ul class="tx-list">${recent.map((t) => txRow(t, { showDate: true })).join('')}</ul>
+    <button type="button" class="card rec-entry" data-action="open-recurring">
+      <span class="badge pos">${icon('repeat', 18)}</span>
+      <span class="main"><span class="title">Geplant & Daueraufträge</span><span class="sub">${rules.length ? `${rules.length} geplant · ${money(fix)} Fixkosten im Monat` : 'Geld an einem Datum oder regelmäßig automatisch buchen'}</span></span>
+      ${icon('chevronRight', 18)}
+    </button>
+
+    <section>
+      <h3 class="section-link static">Alle Umsätze</h3>
+      <div class="seg" role="group" aria-label="Filter" style="margin:0 0 14px">
+        <span class="thumb" style="width:calc((100% - 8px) / 3);transform:translateX(${idx * 100}%)"></span>
+        ${filters.map(([id, label]) => `<button type="button" data-action="tx-filter" data-filter="${id}" aria-pressed="${state.txFilter === id}">${label}</button>`).join('')}
+      </div>
+      <div id="tx-results">${renderTxResults()}</div>
     </section>
   </div>`;
 }
@@ -345,61 +426,6 @@ function openLimitSheet() {
   });
 }
 
-function mountOverview(root) {
-  const chart = $('.area-chart', root);
-  if (!chart) return;
-  const { transactions, settings } = state.data;
-  const series = L.balanceSeries(transactions, settings.startBalance, state.month, 12);
-  const label = $('#nw-label', root);
-  const value = $('#nw-value', root);
-  const baseLabel = label.textContent;
-  attachAreaScrub(chart, series, (i) => {
-    const last = i === series.length - 1;
-    label.textContent = last ? baseLabel : `Gesamtvermögen · Ende ${L.monthLabel(series[i].key)}`;
-    value.textContent = money(series[i].value);
-  });
-}
-
-/* ---------- Buchungen ---------- */
-
-function renderTransactions() {
-  const { transactions } = state.data;
-  if (!transactions.length) {
-    return emptyState({
-      title: 'Noch keine Buchungen',
-      art: 'list',
-      text: 'Tippe auf das große Plus unten, um deine erste Einnahme oder Ausgabe zu erfassen.',
-      actions: startButtons(),
-    });
-  }
-  const filters = [
-    ['all', 'Alle'],
-    ['income', 'Einnahmen'],
-    ['expense', 'Ausgaben'],
-  ];
-  const idx = filters.findIndex((f) => f[0] === state.txFilter);
-  const rules = state.data.recurring;
-  const fix = rules.filter((r) => r.type === 'expense').reduce((s, r) => s + monthlyEquivalent(r), 0);
-  return `<button type="button" class="card rec-entry" data-action="open-recurring">
-      <span class="badge pos">${icon('repeat', 18)}</span>
-      <span class="main"><span class="title">Geplant & Daueraufträge</span><span class="sub">${rules.length ? `${rules.length} geplant · ${money(fix)} Fixkosten im Monat` : 'Geld an einem Datum oder regelmäßig automatisch buchen'}</span></span>
-      ${icon('chevronRight', 18)}
-    </button>
-    <div class="toolbar">
-      <label class="search ${state.txQuery ? 'has-value' : ''}">
-        ${icon('search', 20)}
-        <span class="sr-only">Buchungen durchsuchen</span>
-        <input type="search" id="tx-search" placeholder="Suchen nach Notiz, Kategorie, Betrag" value="${esc(state.txQuery)}" autocomplete="off" enterkeyhint="search">
-        <button type="button" class="clear" data-action="clear-search" aria-label="Suche leeren">${icon('x', 18)}</button>
-      </label>
-      <div class="seg" role="group" aria-label="Filter">
-        <span class="thumb" style="width:calc((100% - 8px) / 3);transform:translateX(${idx * 100}%)"></span>
-        ${filters.map(([id, label]) => `<button type="button" data-action="tx-filter" data-filter="${id}" aria-pressed="${state.txFilter === id}">${label}</button>`).join('')}
-      </div>
-    </div>
-    <div id="tx-results">${renderTxResults()}</div>`;
-}
-
 function renderTxResults() {
   const list = L.filterTransactions(state.data.transactions, { type: state.txFilter, query: state.txQuery });
   if (!list.length) {
@@ -411,23 +437,10 @@ function renderTxResults() {
     .map(
       (g) => `<section class="day-group">
         <div class="day-head"><span>${esc(L.dayLabel(g.date))}</span><span class="num">${money(g.net, { signed: true })}</span></div>
-        <div class="card"><ul class="tx-list">${g.items.map((t) => txRow(t)).join('')}</ul></div>
+        <ul class="tx-list tiles">${g.items.map((t) => txRow(t)).join('')}</ul>
       </section>`,
     )
     .join('') + (groups.length > shown.length ? `<p class="settings-note">Ältere Buchungen: bitte die Suche verwenden.</p>` : '');
-}
-
-function mountTransactions(root) {
-  const input = $('#tx-search', root);
-  if (!input) return;
-  input.addEventListener('input', () => {
-    state.txQuery = input.value;
-    input.closest('.search').classList.toggle('has-value', !!input.value);
-    $('#tx-results', root).innerHTML = renderTxResults();
-  });
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') input.blur();
-  });
 }
 
 /* ---------- Budgets ---------- */
@@ -530,10 +543,11 @@ function renderGoals() {
 /* ---------- Rendern ---------- */
 
 const VIEWS = {
-  overview: [renderOverview, mountOverview],
-  transactions: [renderTransactions, mountTransactions],
+  start: [renderStart, mountStart],
+  numbers: [renderNumbers, null],
   budgets: [renderBudgets, null],
   goals: [renderGoals, null],
+  settings: [renderSettings, mountSettings],
 };
 
 function render() {
@@ -547,7 +561,9 @@ function render() {
       const wasActive = el.classList.contains('active');
       el.innerHTML = renderFn();
       if (!wasActive) {
-        el.classList.add('active');
+        const dir = TABS.findIndex((x) => x.id === t.id) >= lastTabIndex ? 'from-right' : 'from-left';
+        el.classList.remove('from-right', 'from-left');
+        el.classList.add('active', dir);
       }
       mountFn?.(el);
       // Fortschrittsbalken weich einlaufen lassen
@@ -1517,11 +1533,10 @@ function openGoalAddSheet(goal) {
 
 /* ---------- Einstellungen ---------- */
 
-function openSettingsSheet() {
+function renderSettings() {
   const s = state.data.settings;
-  openSheet({
-    title: 'Einstellungen',
-    body: `
+  return `<div class="settings-page">
+      <h3 class="section-title" style="margin-top:0">Profil</h3>
       ${canStore ? '' : `<div class="warning-note">${icon('alert', 18)}<span>Dein Browser erlaubt gerade keine Speicherung (z. B. privater Modus). Änderungen gehen beim Schließen verloren.</span></div>`}
       <div class="field"><label for="s-name">Dein Name</label><input id="s-name" class="input" type="text" maxlength="40" placeholder="z. B. Alex" autocomplete="given-name" value="${esc(s.name)}"></div>
       <div class="field"><label for="s-start">Startguthaben</label><div class="amount-field small"><input id="s-start" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="17" value="${s.startBalance ? esc(L.formatAmountInput(s.startBalance)) : ''}"><span class="cur">€</span></div>
@@ -1535,7 +1550,7 @@ function openSettingsSheet() {
         <button type="button" class="settings-row" id="s-auto"><span class="ri">${icon('sparkle', 18)}</span><span class="main">Automatik einrichten<span class="sub">Apple-Pay-Zahlungen per Kurzbefehl erfassen</span></span>${icon('chevronRight', 18)}</button>
         <button type="button" class="settings-row" id="s-csv"><span class="ri">${icon('download', 18)}</span><span class="main">Zahlungen importieren<span class="sub">Apple-Pay-Datei oder Kontoauszug (CSV)</span></span>${icon('chevronRight', 18)}</button>
         <button type="button" class="settings-row" id="s-rec"><span class="ri">${icon('repeat', 18)}</span><span class="main">Geplant & Daueraufträge<span class="sub">${state.data.recurring.length} angelegt</span></span>${icon('chevronRight', 18)}</button>
-        <button type="button" class="settings-row" id="s-importcard" role="switch" aria-checked="${!state.data.settings.hideImport}"><span class="ri">${icon('overview', 18)}</span><span class="main">Import-Karte in der Übersicht<span class="sub">Aus = du trägst deine Zahlen selbst ein</span></span><span class="switch"></span></button>
+        <button type="button" class="settings-row" id="s-importcard" role="switch" aria-checked="${!state.data.settings.hideImport}"><span class="ri">${icon('overview', 18)}</span><span class="main">Import-Karte auf Start<span class="sub">Aus = du trägst deine Zahlen selbst ein</span></span><span class="switch"></span></button>
         <button type="button" class="settings-row" id="s-learned"><span class="ri">${icon('pencil', 18)}</span><span class="main">Gelernte Kategorien<span class="sub">${Object.keys(state.data.learned).length} Händler gemerkt</span></span>${icon('chevronRight', 18)}</button>
       </div>
 
@@ -1563,8 +1578,13 @@ function openSettingsSheet() {
           <li>Importierte Dateien werden nur gelesen, nie verschickt.</li>
         </ul>
       </div>
-      <p class="settings-note">Flowly · Version 1.4</p>`,
-    onMount(sheet, close) {
+      <p class="settings-note">Flowly · Version 2.0</p>
+    </div>`;
+}
+
+function mountSettings(sheet) {
+  const close = () => {};
+  {
       const startInput = $('#s-start', sheet);
       amountInputHandler(startInput);
       $('#s-save', sheet).addEventListener('click', () => {
@@ -1583,14 +1603,8 @@ function openSettingsSheet() {
 
       $('#s-export', sheet).addEventListener('click', exportBackup);
       $('#s-auto', sheet).addEventListener('click', openAutomationGuide);
-      $('#s-csv', sheet).addEventListener('click', () => {
-        close();
-        pickImportFile();
-      });
-      $('#s-rec', sheet).addEventListener('click', () => {
-        close();
-        setTimeout(openRecurringList, 120);
-      });
+      $('#s-csv', sheet).addEventListener('click', pickImportFile);
+      $('#s-rec', sheet).addEventListener('click', openRecurringList);
       $('#s-learned', sheet).addEventListener('click', openLearnedList);
       $('#s-limit', sheet).addEventListener('click', openLimitSheet);
       $('#s-importcard', sheet).addEventListener('click', (e) => {
@@ -1662,8 +1676,7 @@ function openSettingsSheet() {
         close();
         commit('Alle Daten gelöscht');
       });
-    },
-  });
+  }
 }
 
 /* Backup wird ausschließlich als Datei auf dem Gerät gespeichert – kein Teilen, kein Upload. */
@@ -1707,7 +1720,7 @@ document.addEventListener('click', (e) => {
       openEntrySheet();
       break;
     case 'open-settings':
-      openSettingsSheet();
+      switchTab('settings');
       break;
     case 'import':
       pickImportFile();
@@ -1764,6 +1777,7 @@ document.addEventListener('click', (e) => {
     case 'clear-search':
       e.preventDefault();
       state.txQuery = '';
+      $('#global-search').value = '';
       render();
       break;
     case 'edit-budget':
@@ -1798,6 +1812,35 @@ document.addEventListener('click', (e) => {
 // Pinch-Zoom und Doppeltipp-Zoom auf iOS unterbinden
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
+
+// Suche unten: springt zu „Zahlen“ und filtert live
+const searchInput = $('#global-search');
+searchInput.addEventListener('focus', () => {
+  if (state.tab !== 'numbers') switchTab('numbers');
+});
+searchInput.addEventListener('input', () => {
+  const had = !!state.txQuery.trim();
+  state.txQuery = searchInput.value;
+  $('#search-pill').classList.toggle('has-value', !!searchInput.value);
+  const has = !!state.txQuery.trim();
+  const results = $('#tx-results');
+  if (state.tab === 'numbers' && results && had === has) {
+    results.innerHTML = renderTxResults();
+    const head = $('.search-head span');
+    if (head) head.textContent = `Suche: „${state.txQuery.trim()}“`;
+  }
+  else if (state.tab === 'numbers') render();
+});
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') searchInput.blur();
+});
+$('#search-clear').addEventListener('click', (e) => {
+  e.preventDefault();
+  state.txQuery = '';
+  searchInput.value = '';
+  $('#search-pill').classList.remove('has-value');
+  render();
+});
 
 // Kopfzeile bekommt beim Scrollen eine Trennlinie
 const topbar = $('#topbar');
