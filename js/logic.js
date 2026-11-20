@@ -366,6 +366,26 @@ export function filterTransactions(txs, { type = 'all', query = '' } = {}) {
  * Monatliches Ausgaben-Limit: wie viel ist noch übrig (positiv) bzw. zu viel ausgegeben (negativ)?
  * null, wenn kein Limit gesetzt ist.
  */
+/** Anzahl Monate von a bis b (z. B. "2026-11" -> "2027-01" = 2). */
+export function monthsBetween(a, b) {
+  const [ya, ma] = a.split('-').map(Number);
+  const [yb, mb] = b.split('-').map(Number);
+  return (yb - ya) * 12 + (mb - ma);
+}
+
+/**
+ * Gültiges Limit für einen Monat. Ab dem Startmonat ändert es sich jeden Monat um limitStep
+ * (positiv = erhöhen, negativ = verringern). Nie unter 0.
+ */
+export function limitForMonth(settings, key) {
+  const base = settings?.monthlyLimit || 0;
+  if (base <= 0) return 0;
+  const step = settings.limitStep || 0;
+  if (!step || !settings.limitStart) return base;
+  const n = monthsBetween(settings.limitStart, key);
+  return n <= 0 ? base : Math.max(0, base + step * n);
+}
+
 export function limitStatus(expense, limit) {
   if (!limit || limit <= 0) return null;
   const remaining = limit - expense;
@@ -386,7 +406,7 @@ export function uid() {
 export function createEmptyState() {
   return {
     version: 2,
-    settings: { name: '', startBalance: 0, monthlyLimit: 0, hideImport: false },
+    settings: { name: '', startBalance: 0, monthlyLimit: 0, limitStep: 0, limitStart: '', hideImport: false },
     transactions: [],
     budgets: {},
     goals: [],
@@ -425,6 +445,8 @@ export function sanitizeData(raw) {
   out.settings.startBalance = isCents(s.startBalance) ? s.startBalance : 0;
   out.settings.monthlyLimit = isCents(s.monthlyLimit) && s.monthlyLimit > 0 ? s.monthlyLimit : 0;
   out.settings.hideImport = s.hideImport === true;
+  out.settings.limitStep = isCents(s.limitStep) ? s.limitStep : 0;
+  out.settings.limitStart = typeof s.limitStart === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s.limitStart) ? s.limitStart : '';
 
   const seen = new Set();
   for (const t of raw.transactions) {

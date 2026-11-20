@@ -223,41 +223,98 @@ function renderOverview() {
 }
 
 function limitCard(expense, month) {
-  const st = L.limitStatus(expense, state.data.settings.monthlyLimit);
-  if (!st) {
+  const settings = state.data.settings;
+  if (!settings.monthlyLimit) {
     return `<button type="button" class="card limit-card unset" data-action="edit-limit">
       <span class="badge out">${icon('wallet', 18)}</span>
       <span class="main"><span class="title">Ausgaben-Limit festlegen</span><span class="sub">Lege fest, wie viel du pro Monat höchstens ausgeben willst.</span></span>
       ${icon('plus', 20)}
     </button>`;
   }
-  const cls = st.over ? 'neg' : 'pos';
-  const isNow = month === currentMonth();
-  return `<button type="button" class="card limit-card ${cls}" data-action="edit-limit" aria-label="Ausgaben-Limit bearbeiten">
-    <div class="limit-head"><span class="eyebrow">${st.over ? 'Limit überschritten' : 'Noch verfügbar'} · ${esc(L.monthName(month))}</span>${icon('pencil', 16)}</div>
-    <div class="big limit-value">${money(st.remaining)}</div>
-    <div class="limit-diff">${money(st.remaining, { signed: true })} ${st.over ? 'zu viel ausgegeben' : isNow ? 'übrig bis Monatsende' : 'übrig geblieben'}</div>
-    <div class="bar ${st.over ? 'over' : 'pos'}"><span style="width:${Math.min(100, st.ratio * 100).toFixed(1)}%"></span></div>
-    <div class="limit-foot"><span>Ausgegeben ${money(st.spent)}</span><span>Limit ${money(st.limit)}</span></div>
+  const limit = L.limitForMonth(settings, month);
+  const remaining = limit - expense;
+  const over = remaining < 0;
+  const ratio = limit > 0 ? expense / limit : 1;
+  const step = settings.limitStep || 0;
+  return `<button type="button" class="card limit-card ${over ? 'neg' : 'pos'}" data-action="edit-limit" aria-label="Ausgaben-Limit bearbeiten">
+    <div class="limit-head"><span class="eyebrow">Ausgegeben · ${esc(L.monthName(month))}</span>${icon('pencil', 16)}</div>
+    <div class="big limit-value">${money(expense)}</div>
+    <div class="limit-diff">${money(remaining, { signed: true })}</div>
+    <div class="bar ${over ? 'over' : 'pos'}"><span style="width:${Math.min(100, ratio * 100).toFixed(1)}%"></span></div>
+    <div class="limit-foot"><span>Limit ${money(limit)}</span>${step ? `<span>${money(step, { signed: true })} pro Monat</span>` : ''}</div>
   </button>`;
 }
 
 function openLimitSheet() {
-  const limit = state.data.settings.monthlyLimit;
+  const settings = state.data.settings;
+  const nowKey = currentMonth();
+  const current = L.limitForMonth(settings, nowKey);
+  const step = settings.limitStep || 0;
+  let mode = step > 0 ? 'up' : step < 0 ? 'down' : 'same';
   openSheet({
     title: 'Ausgaben-Limit pro Monat',
     body: `
-      <p class="muted" style="margin:0">So viel willst du pro Monat höchstens ausgeben. Flowly zeigt dir in der Übersicht <b style="color:var(--positive)">grün</b>, wie viel noch übrig ist – und <b style="color:var(--danger)">rot</b>, wenn du drüber bist.</p>
+      <p class="muted" style="margin:0">So viel willst du pro Monat höchstens ausgeben. In der Übersicht steht darunter <b style="color:var(--positive)">grün mit +</b>, wie viel noch geht – oder <b style="color:var(--danger)">rot mit −</b>, wie viel du drüber bist.</p>
       <div class="field">
-        <label for="l-amount">Limit pro Monat</label>
-        <div class="amount-field small"><input id="l-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 1.500" maxlength="16" value="${limit ? esc(L.formatAmountInput(limit)) : ''}"><span class="cur">€</span></div>
-        <div class="form-error" id="l-error"></div>
+        <label for="l-amount">Limit im ${esc(L.monthName(nowKey))}</label>
+        <div class="amount-field small"><input id="l-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 1.500" maxlength="16" value="${current ? esc(L.formatAmountInput(current)) : ''}"><span class="cur">€</span></div>
       </div>
+      <div class="field">
+        <span class="label">Jeden Monat</span>
+        <div class="seg seg3" id="l-mode" role="group" style="margin-top:0">
+          <span class="thumb" style="width:calc((100% - 8px) / 3)"></span>
+          <button type="button" data-mode="same">Gleich lassen</button>
+          <button type="button" data-mode="up">Erhöhen</button>
+          <button type="button" data-mode="down">Verringern</button>
+        </div>
+      </div>
+      <div class="field" id="l-step-field">
+        <label for="l-step" id="l-step-label">Um wie viel?</label>
+        <div class="amount-field small"><span class="sign" id="l-step-sign">+</span><input id="l-step" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 50" maxlength="16" value="${step ? esc(L.formatAmountInput(Math.abs(step))) : ''}"><span class="cur">€</span></div>
+      </div>
+      <div class="limit-preview" id="l-preview"></div>
+      <div class="form-error" id="l-error"></div>
       <button type="button" class="btn primary block" id="l-save">${icon('check', 20)}Limit speichern</button>
-      ${limit ? `<button type="button" class="btn danger block" id="l-remove">${icon('trash', 20)}Limit entfernen</button>` : ''}`,
+      ${settings.monthlyLimit ? `<button type="button" class="btn danger block" id="l-remove">${icon('trash', 20)}Limit entfernen</button>` : ''}`,
     onMount(sheet, close) {
       const input = $('#l-amount', sheet);
+      const stepInput = $('#l-step', sheet);
       amountInputHandler(input);
+      amountInputHandler(stepInput);
+      const modes = ['same', 'up', 'down'];
+      const preview = () => {
+        const base = L.parseAmount(input.value);
+        const st = L.parseAmount(stepInput.value) || 0;
+        const signed = mode === 'up' ? st : mode === 'down' ? -st : 0;
+        const p = $('#l-preview', sheet);
+        if (base == null) return (p.innerHTML = '');
+        const tmp = { monthlyLimit: base, limitStep: signed, limitStart: nowKey };
+        p.innerHTML = [0, 1, 2, 3]
+          .map((i) => {
+            const k = L.addMonths(nowKey, i);
+            return `<div><span>${esc(L.monthShort(k))}</span><strong>${L.formatEuroShort(L.limitForMonth(tmp, k))} €</strong></div>`;
+          })
+          .join('');
+      };
+      const paintMode = () => {
+        const seg = $('#l-mode', sheet);
+        $('.thumb', seg).style.transform = `translateX(${modes.indexOf(mode) * 100}%)`;
+        seg.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+        $('#l-step-field', sheet).hidden = mode === 'same';
+        $('#l-step-sign', sheet).textContent = mode === 'down' ? '−' : '+';
+        $('#l-step-label', sheet).textContent = mode === 'down' ? 'Jeden Monat verringern um' : 'Jeden Monat erhöhen um';
+        preview();
+      };
+      $('#l-mode', sheet).addEventListener('click', (e) => {
+        const b = e.target.closest('[data-mode]');
+        if (!b) return;
+        mode = b.dataset.mode;
+        paintMode();
+      });
+      input.addEventListener('input', preview);
+      stepInput.addEventListener('input', preview);
+      paintMode();
+
       $('#l-save', sheet).addEventListener('click', () => {
         const cents = L.parseAmount(input.value);
         if (cents == null) {
@@ -265,12 +322,22 @@ function openLimitSheet() {
           $('#l-error', sheet).textContent = 'Bitte einen gültigen Betrag eingeben.';
           return;
         }
-        state.data.settings.monthlyLimit = cents;
+        let signed = 0;
+        if (mode !== 'same') {
+          const st = L.parseAmount(stepInput.value);
+          if (st == null) {
+            stepInput.closest('.amount-field').classList.add('invalid');
+            $('#l-error', sheet).textContent = 'Bitte angeben, um wie viel sich das Limit jeden Monat ändern soll.';
+            return;
+          }
+          signed = mode === 'up' ? st : -st;
+        }
+        Object.assign(state.data.settings, { monthlyLimit: cents, limitStep: signed, limitStart: nowKey });
         close();
-        commit(`Ausgaben-Limit: ${money(cents)} pro Monat`);
+        commit(signed ? `Limit ${money(cents)}, jeden Monat ${money(signed, { signed: true })}` : `Ausgaben-Limit: ${money(cents)} pro Monat`);
       });
       $('#l-remove', sheet)?.addEventListener('click', () => {
-        state.data.settings.monthlyLimit = 0;
+        Object.assign(state.data.settings, { monthlyLimit: 0, limitStep: 0, limitStart: '' });
         close();
         commit('Ausgaben-Limit entfernt');
       });
@@ -672,17 +739,39 @@ function runRecurring() {
   return applyRecurring(state.data, L.todayISO(), L.uid).length;
 }
 
+function segLabel(type, planned) {
+  if (planned) return type === 'income' ? '+ Geld hinzufügen' : '− Geld abziehen';
+  return type === 'income' ? 'Einnahme' : 'Ausgabe';
+}
+
+function noteLabel(type, planned) {
+  if (!planned) return 'Notiz / Händler';
+  return type === 'income' ? 'Von was? (woher kommt das Geld)' : 'Wofür? (wofür wird abgezogen)';
+}
+
+function notePlaceholder(type, planned) {
+  if (!planned) return 'z. B. REWE, Wocheneinkauf';
+  return type === 'income' ? 'z. B. Gehalt, Kindergeld, Taschengeld' : 'z. B. Miete, Netflix, Handyvertrag';
+}
+
+function dateLabel(mode, repeat) {
+  if (repeat === 'none') return 'Datum';
+  if (repeat === 'once') return 'An welchem Tag?';
+  if (mode === 'rule-edit') return 'Nächste Buchung am';
+  return 'Ab wann? (erste Buchung)';
+}
+
 function dateHint(date) {
   if (!L.isValidISODate(date) || date <= L.todayISO()) return 'Tipp: Wähle ein Datum in der Zukunft, dann wird der Betrag erst an diesem Tag gebucht.';
   return `Geplant: Der Betrag wird am ${L.shortDate(date)} automatisch gebucht.`;
 }
 
 function repeatHint(repeat, date) {
-  if (repeat === 'once' && L.isValidISODate(date)) return `Einmalig am ${L.shortDate(date)} – wird an diesem Tag automatisch gebucht.`;
+  if (repeat === 'once' && L.isValidISODate(date)) return `Wird am ${L.shortDate(date)} automatisch gebucht.`;
   if (repeat === 'none' || !L.isValidISODate(date)) return '';
   const r = { interval: repeat, day: Number(date.slice(8, 10)), nextDate: date };
   const due = date <= L.todayISO() ? 'Fällige Termine bis heute werden sofort gebucht.' : `Erste Buchung am ${L.shortDate(date)}.`;
-  return `${describeRule(r)} – automatisch. ${due}`;
+  return `${describeRule(r)} automatisch. ${due}`;
 }
 
 function openEntrySheet({ tx = null, rule = null, newRule = false, once = false } = {}) {
@@ -717,8 +806,8 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
     ${srcInfo}
     <div class="seg type-${draft.type}" role="group" aria-label="Art der Buchung" style="margin-top:0">
       <span class="thumb" style="width:calc((100% - 8px) / 2);transform:translateX(${draft.type === 'income' ? 100 : 0}%)"></span>
-      <button type="button" data-type="expense" aria-pressed="${draft.type === 'expense'}">Ausgabe</button>
-      <button type="button" data-type="income" aria-pressed="${draft.type === 'income'}">Einnahme</button>
+      <button type="button" data-type="expense" aria-pressed="${draft.type === 'expense'}">${segLabel('expense', isRule || draft.repeat !== 'none')}</button>
+      <button type="button" data-type="income" aria-pressed="${draft.type === 'income'}">${segLabel('income', isRule || draft.repeat !== 'none')}</button>
     </div>
     <div class="field">
       <label for="f-amount">Betrag</label>
@@ -730,23 +819,23 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
       <div class="form-error" id="f-error"></div>
     </div>
     <div class="field">
-      <label for="f-note">${isRule ? 'Bezeichnung' : 'Notiz / Händler'}</label>
-      <input id="f-note" class="input" type="text" maxlength="100" placeholder="${isRule ? 'z. B. Miete, Gehalt, Netflix' : 'z. B. REWE, Wocheneinkauf'}" autocomplete="off" enterkeyhint="done" value="${esc(draft.note)}">
+      <label for="f-note" id="f-note-label">${esc(noteLabel(draft.type, isRule || draft.repeat !== 'none'))}</label>
+      <input id="f-note" class="input" type="text" maxlength="100" placeholder="${esc(notePlaceholder(draft.type, isRule || draft.repeat !== 'none'))}" autocomplete="off" enterkeyhint="done" value="${esc(draft.note)}">
     </div>
     <div class="field">
       <span class="label">Kategorie <span class="cat-hint" id="f-cat-hint"></span></span>
       <div class="cat-grid" role="radiogroup" aria-label="Kategorie" id="f-cats">${catGrid()}</div>
     </div>
-    <div class="field">
-      <label for="f-date">${isRule ? 'Nächste Ausführung' : 'Datum'}</label>
-      <input id="f-date" class="input" type="date" value="${esc(draft.date)}" required>
-      ${mode === 'tx-new' ? `<div class="field-hint" id="f-date-hint">${esc(dateHint(draft.date))}</div>` : ''}
-    </div>
     ${mode === 'tx-edit' ? '' : `<div class="field">
-      <label for="f-repeat">Wiederholen</label>
+      <label for="f-repeat">Wie oft?</label>
       <select id="f-repeat" class="input">${repeatOptions}</select>
-      <div class="field-hint" id="f-repeat-hint">${esc(repeatHint(draft.repeat, draft.date))}</div>
     </div>`}
+    <div class="field">
+      <label for="f-date" id="f-date-label">${esc(dateLabel(mode, draft.repeat))}</label>
+      <input id="f-date" class="input" type="date" value="${esc(draft.date)}" required>
+      ${mode === 'tx-new' ? `<div class="field-hint" id="f-date-hint">${esc(draft.repeat === 'none' ? dateHint(draft.date) : '')}</div>` : ''}
+      ${mode === 'tx-edit' ? '' : `<div class="field-hint" id="f-repeat-hint">${esc(repeatHint(draft.repeat, draft.date))}</div>`}
+    </div>
     <button type="button" class="btn primary block" id="f-save">${icon('check', 20)}${mode === 'tx-edit' || mode === 'rule-edit' ? 'Änderungen speichern' : isRule ? 'Dauerauftrag speichern' : 'Buchung speichern'}</button>
     ${mode === 'tx-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}Buchung löschen</button>` : ''}
     ${mode === 'rule-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}${rule.interval === 'once' ? 'Geplante Buchung löschen' : 'Dauerauftrag löschen'}</button>` : ''}`;
@@ -799,6 +888,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
         $('.sign', field).textContent = draft.type === 'income' ? '+' : '−';
         paintCats();
         suggest();
+        updateHint();
       });
 
       $('#f-cats', sheet).addEventListener('click', (e) => {
@@ -812,6 +902,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
 
       let t;
       noteInput.addEventListener('input', () => {
+        noteInput.classList.remove('invalid');
         clearTimeout(t);
         t = setTimeout(suggest, 250);
       });
@@ -819,10 +910,17 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
         if (e.key === 'Enter') e.target.blur();
       });
       const updateHint = () => {
+        const rep = repeatSel ? repeatSel.value : 'none';
+        const planned = isRule || rep !== 'none';
         const h = $('#f-repeat-hint', sheet);
-        if (h) h.textContent = repeatHint(repeatSel.value, dateInput.value);
+        if (h) h.textContent = repeatHint(rep, dateInput.value);
         const dh = $('#f-date-hint', sheet);
-        if (dh) dh.textContent = repeatSel?.value === 'none' ? dateHint(dateInput.value) : '';
+        if (dh) dh.textContent = rep === 'none' ? dateHint(dateInput.value) : '';
+        $('#f-date-label', sheet).textContent = dateLabel(mode, rep);
+        $('#f-note-label', sheet).textContent = noteLabel(draft.type, planned);
+        noteInput.placeholder = notePlaceholder(draft.type, planned);
+        seg.querySelectorAll('[data-type]').forEach((x) => (x.textContent = segLabel(x.dataset.type, planned)));
+        if (mode === 'tx-new') $('#f-save', sheet).innerHTML = `${icon('check', 20)}${rep === 'none' ? 'Buchung speichern' : rep === 'once' ? 'Planen' : 'Dauerauftrag speichern'}`;
       };
       repeatSel?.addEventListener('change', updateHint);
       dateInput.addEventListener('change', updateHint);
@@ -843,6 +941,12 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
           return;
         }
         const note = noteInput.value.trim().slice(0, 100);
+        if (!note && (isRule || (repeatSel && repeatSel.value !== 'none'))) {
+          noteInput.classList.add('invalid');
+          noteInput.focus();
+          error.textContent = draft.type === 'income' ? 'Bitte angeben, von was das Geld kommt (z. B. Gehalt).' : 'Bitte angeben, wofür abgezogen wird (z. B. Miete).';
+          return;
+        }
         const category = L.getCategory(draft.type, draft.category).id;
         const mk = merchantKey(note);
         const repeat = repeatSel ? repeatSel.value : 'none';
@@ -1422,7 +1526,7 @@ function openSettingsSheet() {
       <div class="field"><label for="s-name">Dein Name</label><input id="s-name" class="input" type="text" maxlength="40" placeholder="z. B. Alex" autocomplete="given-name" value="${esc(s.name)}"></div>
       <div class="field"><label for="s-start">Startguthaben</label><div class="amount-field small"><input id="s-start" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="17" value="${s.startBalance ? esc(L.formatAmountInput(s.startBalance)) : ''}"><span class="cur">€</span></div>
         <div class="muted" style="font-size:13px;margin-top:6px">Dein Kontostand vor der ersten Buchung. Negative Werte mit „-“.</div></div>
-      <button type="button" class="settings-group settings-row" id="s-limit" style="margin-top:16px"><span class="ri">${icon('wallet', 18)}</span><span class="main">Ausgaben-Limit pro Monat<span class="sub">${state.data.settings.monthlyLimit ? money(state.data.settings.monthlyLimit) : 'Nicht festgelegt'}</span></span>${icon('chevronRight', 18)}</button>
+      <button type="button" class="settings-group settings-row" id="s-limit" style="margin-top:16px"><span class="ri">${icon('wallet', 18)}</span><span class="main">Ausgaben-Limit pro Monat<span class="sub">${state.data.settings.monthlyLimit ? `${money(L.limitForMonth(state.data.settings, currentMonth()))}${state.data.settings.limitStep ? ` · ${money(state.data.settings.limitStep, { signed: true })} pro Monat` : ''}` : 'Nicht festgelegt'}</span></span>${icon('chevronRight', 18)}</button>
       <div class="form-error" id="s-error"></div>
       <button type="button" class="btn primary block" id="s-save">${icon('check', 20)}Speichern</button>
 
@@ -1459,7 +1563,7 @@ function openSettingsSheet() {
           <li>Importierte Dateien werden nur gelesen, nie verschickt.</li>
         </ul>
       </div>
-      <p class="settings-note">Flowly · Version 1.3</p>`,
+      <p class="settings-note">Flowly · Version 1.4</p>`,
     onMount(sheet, close) {
       const startInput = $('#s-start', sheet);
       amountInputHandler(startInput);

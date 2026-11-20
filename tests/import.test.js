@@ -427,3 +427,20 @@ test('Ausgaben-Limit: übrig (grün) oder überschritten (rot)', () => {
   const bad = L.sanitizeData({ transactions: [], settings: { monthlyLimit: -5, hideImport: 'ja' } });
   assert.deepEqual([bad.settings.monthlyLimit, bad.settings.hideImport], [0, false]);
 });
+
+test('Ausgaben-Limit, das sich jeden Monat erhöht oder verringert', () => {
+  const s = { monthlyLimit: 150000, limitStep: 5000, limitStart: '2026-11' };
+  assert.equal(L.monthsBetween('2026-11', '2027-01'), 2);
+  assert.equal(L.limitForMonth(s, '2026-10'), 150000); // vor dem Start: Grundbetrag
+  assert.equal(L.limitForMonth(s, '2026-11'), 150000);
+  assert.equal(L.limitForMonth(s, '2026-12'), 155000);
+  assert.equal(L.limitForMonth(s, '2027-11'), 210000);
+  const down = { monthlyLimit: 20000, limitStep: -5000, limitStart: '2026-11' };
+  assert.equal(L.limitForMonth(down, '2026-12'), 15000);
+  assert.equal(L.limitForMonth(down, '2027-06'), 0); // nie negativ
+  assert.equal(L.limitForMonth({ monthlyLimit: 150000 }, '2030-01'), 150000);
+  assert.equal(L.limitForMonth({ monthlyLimit: 0, limitStep: 100, limitStart: '2026-01' }, '2026-05'), 0);
+  const clean = L.sanitizeData({ transactions: [], settings: { monthlyLimit: 150000, limitStep: -2500, limitStart: '2026-11' } });
+  assert.deepEqual([clean.settings.limitStep, clean.settings.limitStart], [-2500, '2026-11']);
+  assert.equal(L.sanitizeData({ transactions: [], settings: { limitStart: '2026-13' } }).settings.limitStart, '');
+});
