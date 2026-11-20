@@ -24,6 +24,9 @@ export const INCOME_CATEGORIES = [
 ];
 
 export const MAX_CENTS = 99_999_999_999; // 999.999.999,99 €
+export const SOURCES = ['manual', 'applepay', 'bank', 'recurring'];
+export const INTERVAL_IDS = ['weekly', 'monthly', 'quarterly', 'yearly'];
+const MAX_SEEN = 20000;
 
 const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
@@ -37,6 +40,8 @@ export function getCategory(type, id) {
   const list = categoriesFor(type);
   return list.find((c) => c.id === id) || list[list.length - 1];
 }
+
+import { merchantKey } from './categorize.js';
 
 /* ---------- Escaping ---------- */
 
@@ -369,12 +374,30 @@ export function uid() {
 }
 
 export function createEmptyState() {
-  return { version: 1, settings: { name: '', startBalance: 0 }, transactions: [], budgets: {}, goals: [] };
+  return {
+    version: 2,
+    settings: { name: '', startBalance: 0 },
+    transactions: [],
+    budgets: {},
+    goals: [],
+    recurring: [],
+    learned: {},
+    importInfo: { lastImportAt: 0, seen: [] },
+    dismissedSuggestions: [],
+  };
+}
+
+/** Merkt sich importierte Schlüssel (begrenzt, älteste fallen zuerst heraus). */
+export function rememberSeen(state, keys) {
+  const set = new Set(state.importInfo.seen);
+  for (const k of keys) set.add(k);
+  state.importInfo.seen = [...set].slice(-MAX_SEEN);
 }
 
 const cleanText = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, max) : '');
 const isCents = (v) => Number.isSafeInteger(v) && Math.abs(v) <= MAX_CENTS;
 const cleanId = (v) => (typeof v === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(v) ? v : uid());
+const cleanKey = (v) => (typeof v === 'string' ? v.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().slice(0, 60) : '');
 
 /**
  * Prüft und bereinigt gespeicherte oder importierte Daten.
@@ -399,7 +422,7 @@ export function sanitizeData(raw) {
     let id = cleanId(t.id);
     while (seen.has(id)) id = uid();
     seen.add(id);
-    out.transactions.push({
+    const tx = {
       id,
       type,
       amount: t.amount,
@@ -407,7 +430,15 @@ export function sanitizeData(raw) {
       note: cleanText(t.note, 100),
       date: t.date,
       createdAt: Number.isFinite(t.createdAt) ? t.createdAt : 0,
-    });
+    };
+    if (SOURCES.includes(t.src)) tx.src = t.src;
+    if (typeof t.extId === 'string' && t.extId) tx.extId = cleanText(t.extId, 160);
+    if (typeof t.merchant === 'string' && t.merchant.trim()) tx.merchant = cleanText(t.merchant, 80);
+    const mk = cleanKey(t.mkey);
+    if (mk) tx.mkey = mk;
+    if (typeof t.rid === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(t.rid)) tx.rid = t.rid;
+    if (t.auto === true) tx.auto = true;
+    out.transactions.push(tx);
   }
 
   if (raw.budgets && typeof raw.budgets === 'object') {
@@ -430,6 +461,45 @@ export function sanitizeData(raw) {
         createdAt: Number.isFinite(g.createdAt) ? g.createdAt : 0,
       });
     }
+  }
+
+  if (Array.isArray(raw.recurring)) {
+    for (const r of raw.recurring) {
+      if (!r || typeof r !== 'object') continue;
+      const type = r.type === 'income' ? 'income' : r.type === 'expense' ? 'expense' : null;
+      if (!type || !isCents(r.amount) || r.amount <= 0 || !isValidISODate(r.nextDate) || !INTERVAL_IDS.includes(r.interval)) continue;
+      const day = Number.isInteger(r.day) && r.day >= 1 && r.day <= 31 ? r.day : Number(r.nextDate.slice(8, 10));
+      out.recurring.push({
+        id: cleanId(r.id),
+        type,
+        amount: r.amount,
+        category: getCategory(type, r.category).id,
+        note: cleanText(r.note, 100),
+        mkey: cleanKey(r.mkey),
+        interval: r.interval,
+        day,
+        nextDate: r.nextDate,
+        active: r.active !== false,
+        createdAt: Number.isFinite(r.createdAt) ? r.createdAt : 0,
+      });
+    }
+  }
+
+  if (raw.learned && typeof raw.learned === 'object' && !Array.isArray(raw.learned)) {
+    for (const [k, v] of Object.entries(raw.learned)) {
+      const m = /^(income|expense):([a-z0-9 ]{1,60})$/.exec(k);
+      if (!m || typeof v !== 'string') continue;
+      if (categoriesFor(m[1]).some((c) => c.id === v)) out.learned[k] = v;
+    }
+  }
+
+  const info = raw.importInfo;
+  if (info && typeof info === 'object') {
+    out.importInfo.lastImportAt = Number.isFinite(info.lastImportAt) && info.lastImportAt > 0 ? info.lastImportAt : 0;
+    if (Array.isArray(info.seen)) out.importInfo.seen = info.seen.filter((x) => typeof x === 'string' && x.length <= 160).slice(-MAX_SEEN);
+  }
+  if (Array.isArray(raw.dismissedSuggestions)) {
+    out.dismissedSuggestions = raw.dismissedSuggestions.filter((x) => typeof x === 'string' && x.length <= 80).slice(-500);
   }
   return out;
 }
@@ -455,6 +525,24 @@ export function generateSampleData(today = todayISO(), name = '') {
   state.settings = { name, startBalance: 420000 };
   let counter = 0;
   const currentKey = monthKeyOf(today);
+  // Daueraufträge & Abos der Beispieldaten
+  const ruleDefs = [
+    ['Gehalt', 'income', 'gehalt', 285000, 1],
+    ['Deutschlandticket', 'expense', 'mobilitaet', 5800, 1],
+    ['Fitnessstudio', 'expense', 'abos', 2990, 2],
+    ['Miete', 'expense', 'wohnen', 89000, 3],
+    ['Streaming', 'expense', 'abos', 1299, 5],
+    ['Musik-Abo', 'expense', 'abos', 1099, 8],
+    ['Strom', 'expense', 'wohnen', 6500, 10],
+    ['Handyvertrag', 'expense', 'abos', 1999, 12],
+  ];
+  const rulesByNote = new Map();
+  ruleDefs.forEach(([note, type, category, amount, day], i) => {
+    const r = { id: `demorule${i + 1}`, type, amount, category, note, mkey: merchantKey(note), interval: 'monthly', day, nextDate: '', active: true, createdAt: i };
+    rulesByNote.set(note, r);
+    state.recurring.push(r);
+  });
+  const autoSources = { lebensmittel: 'applepay', freizeit: 'applepay', shopping: 'applepay', gesundheit: 'applepay' };
 
   for (const key of lastMonths(currentKey, 6)) {
     const [y, m] = key.split('-').map(Number);
@@ -463,7 +551,11 @@ export function generateSampleData(today = todayISO(), name = '') {
       const date = `${key}-${pad2(Math.min(day, dim))}`;
       if (date > today) return;
       counter += 1;
-      state.transactions.push({ id: `demo${counter}`, type, category, amount, note, date, createdAt: counter });
+      const tx = { id: `demo${counter}`, type, category, amount, note, date, createdAt: counter, mkey: merchantKey(note), merchant: note };
+      const rule = rulesByNote.get(note);
+      if (rule) Object.assign(tx, { src: 'recurring', rid: rule.id, extId: `rec:${rule.id}:${date}` });
+      else if (autoSources[category]) Object.assign(tx, { src: 'applepay', extId: `demo:${counter}`, auto: true });
+      state.transactions.push(tx);
     };
 
     add(1, 'income', 'gehalt', 285000, 'Gehalt');
@@ -494,6 +586,16 @@ export function generateSampleData(today = todayISO(), name = '') {
   counter += 1;
   state.transactions.push({ id: `demo${counter}`, type: 'expense', category: 'shopping', amount: 11999, note: 'Neue Sneaker', date: `${currentKey}-${pad2(Math.max(1, dayNow - 1))}`, createdAt: counter });
 
+  // Nächster Termin jeder Regel: erster Tag nach heute
+  for (const r of state.recurring) {
+    let key = currentKey;
+    let date = `${key}-${pad2(Math.min(r.day, daysInMonth(...key.split('-').map(Number))))}`;
+    if (date <= today) {
+      key = addMonths(key, 1);
+      date = `${key}-${pad2(Math.min(r.day, daysInMonth(...key.split('-').map(Number))))}`;
+    }
+    r.nextDate = date;
+  }
   state.budgets = { wohnen: 110000, lebensmittel: 40000, mobilitaet: 15000, freizeit: 15000, abos: 8000, shopping: 15000 };
   state.goals = [
     { id: 'demogoal1', name: 'Notgroschen', target: 500000, saved: 235000, createdAt: 1 },

@@ -4,9 +4,13 @@ import { loadState, saveState, storageAvailable, loadUi, saveUi } from './store.
 import { icon } from './icons.js';
 import { areaChart, attachAreaScrub, barChart, donutChart } from './charts.js';
 import * as Lock from './lock.js';
+import { merchantKey, suggestCategory, learnedKey } from './categorize.js';
+import { decodeBytes, parseImportText, buildCandidates, candidateToTransaction } from './importer.js';
+import { INTERVALS, applyRecurring, detectRecurring, describeRule } from './recurring.js';
 
 const esc = L.escapeHtml;
 const money = L.formatMoney;
+const rememberSeen = L.rememberSeen;
 const $ = (sel, root = document) => root.querySelector(sel);
 
 const TABS = [
@@ -61,6 +65,7 @@ function txRow(t, { showDate = false } = {}) {
   const title = t.note ? esc(t.note) : esc(cat.label);
   const subParts = [t.note ? cat.label : isIn ? 'Einnahme' : 'Ausgabe'];
   if (showDate) subParts.push(L.dayLabel(t.date));
+  if (t.src && SOURCE_LABEL[t.src]) subParts.push(SOURCE_LABEL[t.src]);
   return `<li><button type="button" class="row" data-action="edit-tx" data-id="${esc(t.id)}">
     ${catIcon(cat)}
     <span class="main"><span class="title">${title}</span><span class="sub">${esc(subParts.join(' · '))}</span></span>
@@ -78,8 +83,9 @@ function emptyState({ title, text, art = 'sparkle', actions = '', small = false 
 }
 
 const sampleButtons = `
-  <button type="button" class="btn primary block" data-action="load-sample">${icon('database', 20)}Beispieldaten laden</button>
-  <button type="button" class="btn block" data-action="open-add">${icon('plus', 20)}Erste Buchung erfassen</button>`;
+  <button type="button" class="btn primary block" data-action="import">${icon('download', 20)}Neue Zahlungen importieren</button>
+  <button type="button" class="btn block" data-action="open-automation">${icon('sparkle', 20)}Automatik einrichten</button>
+  <button type="button" class="btn block" data-action="load-sample">${icon('database', 20)}Beispieldaten laden</button>`;
 
 /* ---------- Kopfzeile & Tabs ---------- */
 
@@ -123,7 +129,7 @@ function renderOverview() {
     return `<div class="stack">${emptyState({
       title: 'Willkommen bei Flowly',
       art: 'trend',
-      text: 'Hier siehst du bald, wohin dein Geld fließt. Erfasse deine erste Buchung – oder schau dir Flowly mit Beispieldaten an.',
+      text: 'Flowly erfasst deine Apple-Pay-Zahlungen automatisch und liest Kontoauszüge (CSV) ein – alles bleibt auf deinem iPhone. Richte die Automatik einmal ein oder schau dir Flowly mit Beispieldaten an.',
       actions: sampleButtons,
     })}
     ${!settings.name ? `<button type="button" class="card settings-row" data-action="open-settings" style="border-radius:18px"><span class="ri">${icon('user', 18)}</span><span class="main">Wie heißt du?<span class="sub">Name und Startguthaben in den Einstellungen festlegen</span></span>${icon('chevronRight', 18)}</button>` : ''}
@@ -147,6 +153,8 @@ function renderOverview() {
 
   return `<div class="stack">
     ${monthSwitcher()}
+
+    ${importCard()}
 
     <section class="card networth" id="networth">
       <div class="eyebrow" id="nw-label">Gesamtvermögen${isNow ? '' : ` · Ende ${esc(L.monthName(month))}`}</div>
@@ -236,7 +244,14 @@ function renderTransactions() {
     ['expense', 'Ausgaben'],
   ];
   const idx = filters.findIndex((f) => f[0] === state.txFilter);
-  return `<div class="toolbar">
+  const rules = state.data.recurring;
+  const fix = rules.filter((r) => r.type === 'expense').reduce((s, r) => s + monthlyEquivalent(r), 0);
+  return `<button type="button" class="card rec-entry" data-action="open-recurring">
+      <span class="badge pos">${icon('repeat', 18)}</span>
+      <span class="main"><span class="title">Daueraufträge & Abos</span><span class="sub">${rules.length ? `${rules.length} aktiv · ${money(fix)} Fixkosten im Monat` : 'Miete, Gehalt, Abos einmal anlegen – Flowly bucht automatisch'}</span></span>
+      ${icon('chevronRight', 18)}
+    </button>
+    <div class="toolbar">
       <label class="search ${state.txQuery ? 'has-value' : ''}">
         ${icon('search', 20)}
         <span class="sr-only">Buchungen durchsuchen</span>
@@ -554,7 +569,7 @@ function confirmDialog({ title, message, confirmLabel = 'Bestätigen', danger = 
   });
 }
 
-/* ---------- Buchung anlegen / bearbeiten ---------- */
+/* ---------- Buchung / Dauerauftrag anlegen & bearbeiten ---------- */
 
 function amountInputHandler(input) {
   input.addEventListener('input', () => {
@@ -564,10 +579,45 @@ function amountInputHandler(input) {
   });
 }
 
-function openTransactionSheet(existing = null) {
-  const draft = existing
-    ? { ...existing }
-    : { type: 'expense', category: 'lebensmittel', amount: null, note: '', date: L.todayISO() };
+const SOURCE_LABEL = { applepay: 'Apple Pay', bank: 'Kontoauszug', recurring: 'Dauerauftrag' };
+
+/** Kategorie gezielt geändert: für den Händler merken und automatisch zugeordnete Buchungen mitziehen. */
+function learnCategory(type, mkey, category, exceptId) {
+  if (!mkey) return 0;
+  state.data.learned[learnedKey(type, mkey)] = category;
+  let changed = 0;
+  for (const t of state.data.transactions) {
+    if (t.id !== exceptId && t.auto && t.type === type && t.mkey === mkey && t.category !== category) {
+      t.category = category;
+      changed++;
+    }
+  }
+  return changed;
+}
+
+/** Fällige Daueraufträge buchen. Gibt die Anzahl neuer Buchungen zurück. */
+function runRecurring() {
+  return applyRecurring(state.data, L.todayISO(), L.uid).length;
+}
+
+function repeatHint(repeat, date) {
+  if (repeat === 'none' || !L.isValidISODate(date)) return '';
+  const r = { interval: repeat, day: Number(date.slice(8, 10)), nextDate: date };
+  const due = date <= L.todayISO() ? 'Fällige Termine bis heute werden sofort gebucht.' : `Erste Buchung am ${L.shortDate(date)}.`;
+  return `${describeRule(r)} – automatisch. ${due}`;
+}
+
+function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
+  const mode = tx ? 'tx-edit' : rule ? 'rule-edit' : newRule ? 'rule-new' : 'tx-new';
+  const isRule = mode.startsWith('rule');
+  const today = L.todayISO();
+  const draft =
+    mode === 'tx-edit'
+      ? { type: tx.type, category: tx.category, amount: tx.amount, note: tx.note, date: tx.date, repeat: 'none' }
+      : mode === 'rule-edit'
+        ? { type: rule.type, category: rule.category, amount: rule.amount, note: rule.note, date: rule.nextDate, repeat: rule.interval }
+        : { type: 'expense', category: newRule ? 'wohnen' : 'lebensmittel', amount: null, note: '', date: today, repeat: newRule ? 'monthly' : 'none' };
+  let catTouched = false;
 
   const catGrid = () =>
     L.categoriesFor(draft.type)
@@ -576,8 +626,17 @@ function openTransactionSheet(existing = null) {
           ${catIcon(c, 20)}<span class="lbl">${esc(c.label)}</span></button>`,
       )
       .join('');
+  const repeatOptions = [...(isRule ? [] : [{ id: 'none', label: 'Nie (einmalig)' }]), ...INTERVALS]
+    .map((o) => `<option value="${o.id}" ${o.id === draft.repeat ? 'selected' : ''}>${esc(o.label)}</option>`)
+    .join('');
+  const ruleOfTx = tx?.rid ? state.data.recurring.find((r) => r.id === tx.rid) : null;
+  const srcInfo =
+    mode === 'tx-edit' && tx.src && SOURCE_LABEL[tx.src]
+      ? `<div class="src-note">${icon(tx.src === 'recurring' ? 'repeat' : 'download', 16)}<span>Automatisch erfasst: ${esc(SOURCE_LABEL[tx.src])}${ruleOfTx ? ` „${esc(ruleOfTx.note || L.getCategory(ruleOfTx.type, ruleOfTx.category).label)}“` : ''}</span></div>`
+      : '';
 
   const body = `
+    ${srcInfo}
     <div class="seg type-${draft.type}" role="group" aria-label="Art der Buchung" style="margin-top:0">
       <span class="thumb" style="width:calc((100% - 8px) / 2);transform:translateX(${draft.type === 'income' ? 100 : 0}%)"></span>
       <button type="button" data-type="expense" aria-pressed="${draft.type === 'expense'}">Ausgabe</button>
@@ -593,53 +652,94 @@ function openTransactionSheet(existing = null) {
       <div class="form-error" id="f-error"></div>
     </div>
     <div class="field">
-      <span class="label">Kategorie</span>
+      <label for="f-note">${isRule ? 'Bezeichnung' : 'Notiz / Händler'}</label>
+      <input id="f-note" class="input" type="text" maxlength="100" placeholder="${isRule ? 'z. B. Miete, Gehalt, Netflix' : 'z. B. REWE, Wocheneinkauf'}" autocomplete="off" enterkeyhint="done" value="${esc(draft.note)}">
+    </div>
+    <div class="field">
+      <span class="label">Kategorie <span class="cat-hint" id="f-cat-hint"></span></span>
       <div class="cat-grid" role="radiogroup" aria-label="Kategorie" id="f-cats">${catGrid()}</div>
     </div>
     <div class="field">
-      <label for="f-note">Notiz</label>
-      <input id="f-note" class="input" type="text" maxlength="100" placeholder="z. B. Wocheneinkauf" autocomplete="off" enterkeyhint="done" value="${esc(draft.note)}">
-    </div>
-    <div class="field">
-      <label for="f-date">Datum</label>
+      <label for="f-date">${isRule ? 'Nächste Ausführung' : 'Datum'}</label>
       <input id="f-date" class="input" type="date" value="${esc(draft.date)}" required>
     </div>
-    <button type="button" class="btn primary block" id="f-save">${icon('check', 20)}${existing ? 'Änderungen speichern' : 'Buchung speichern'}</button>
-    ${existing ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}Buchung löschen</button>` : ''}`;
+    ${mode === 'tx-edit' ? '' : `<div class="field">
+      <label for="f-repeat">Wiederholen</label>
+      <select id="f-repeat" class="input">${repeatOptions}</select>
+      <div class="field-hint" id="f-repeat-hint">${esc(repeatHint(draft.repeat, draft.date))}</div>
+    </div>`}
+    <button type="button" class="btn primary block" id="f-save">${icon('check', 20)}${mode === 'tx-edit' || mode === 'rule-edit' ? 'Änderungen speichern' : isRule ? 'Dauerauftrag speichern' : 'Buchung speichern'}</button>
+    ${mode === 'tx-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}Buchung löschen</button>` : ''}
+    ${mode === 'rule-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}Dauerauftrag löschen</button>` : ''}`;
+
+  const titles = { 'tx-new': 'Neue Buchung', 'tx-edit': 'Buchung bearbeiten', 'rule-new': 'Neuer Dauerauftrag', 'rule-edit': 'Dauerauftrag bearbeiten' };
 
   openSheet({
-    title: existing ? 'Buchung bearbeiten' : 'Neue Buchung',
+    title: titles[mode],
     body,
     onMount(sheet, close) {
       const amount = $('#f-amount', sheet);
       const field = $('.amount-field', sheet);
       const seg = $('.seg', sheet);
       const error = $('#f-error', sheet);
+      const noteInput = $('#f-note', sheet);
+      const repeatSel = $('#f-repeat', sheet);
+      const dateInput = $('#f-date', sheet);
+      const catHint = $('#f-cat-hint', sheet);
       amountInputHandler(amount);
+
+      const paintCats = () => ($('#f-cats', sheet).innerHTML = catGrid());
+      const suggest = () => {
+        if (catTouched || mode === 'tx-edit') return;
+        const note = noteInput.value.trim();
+        if (!note) return (catHint.textContent = '');
+        const s = suggestCategory(draft.type, note, merchantKey(note), state.data.learned);
+        if (s.source === 'default') return (catHint.textContent = '');
+        if (s.category !== draft.category) {
+          draft.category = s.category;
+          paintCats();
+        }
+        catHint.textContent = s.source === 'learned' ? '· gemerkt' : '· vorgeschlagen';
+      };
 
       seg.addEventListener('click', (e) => {
         const b = e.target.closest('[data-type]');
         if (!b || b.dataset.type === draft.type) return;
         draft.type = b.dataset.type;
         draft.category = draft.type === 'income' ? 'gehalt' : 'lebensmittel';
+        catTouched = false;
         seg.className = `seg type-${draft.type}`;
         $('.thumb', seg).style.transform = `translateX(${draft.type === 'income' ? 100 : 0}%)`;
         seg.querySelectorAll('[data-type]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.type === draft.type)));
         field.className = `amount-field ${draft.type}`;
         $('.sign', field).textContent = draft.type === 'income' ? '+' : '−';
-        $('#f-cats', sheet).innerHTML = catGrid();
+        paintCats();
+        suggest();
       });
 
       $('#f-cats', sheet).addEventListener('click', (e) => {
         const b = e.target.closest('[data-cat]');
         if (!b) return;
         draft.category = b.dataset.cat;
+        catTouched = true;
+        catHint.textContent = '';
         sheet.querySelectorAll('.cat-btn').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
       });
 
-      $('#f-note', sheet).addEventListener('keydown', (e) => {
+      let t;
+      noteInput.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(suggest, 250);
+      });
+      noteInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') e.target.blur();
       });
+      const updateHint = () => {
+        const h = $('#f-repeat-hint', sheet);
+        if (h) h.textContent = repeatHint(repeatSel.value, dateInput.value);
+      };
+      repeatSel?.addEventListener('change', updateHint);
+      dateInput.addEventListener('change', updateHint);
 
       $('#f-save', sheet).addEventListener('click', () => {
         const cents = L.parseAmount(amount.value);
@@ -650,43 +750,458 @@ function openTransactionSheet(existing = null) {
           error.textContent = amount.value.trim() ? 'Bitte einen gültigen Betrag eingeben, z. B. 12,50' : 'Bitte gib einen Betrag ein.';
           return;
         }
-        const date = $('#f-date', sheet).value;
+        const date = dateInput.value;
         if (!L.isValidISODate(date)) {
           error.textContent = 'Bitte ein gültiges Datum wählen.';
-          $('#f-date', sheet).classList.add('invalid');
+          dateInput.classList.add('invalid');
           return;
         }
-        const tx = {
-          id: existing ? existing.id : L.uid(),
+        const note = noteInput.value.trim().slice(0, 100);
+        const category = L.getCategory(draft.type, draft.category).id;
+        const mk = merchantKey(note);
+        const repeat = repeatSel ? repeatSel.value : 'none';
+        const list = state.data.transactions;
+
+        if (mode === 'tx-edit') {
+          const i = list.findIndex((x) => x.id === tx.id);
+          const updated = { ...tx, type: draft.type, amount: cents, category, note, date };
+          let msg = 'Buchung aktualisiert';
+          if (catTouched && category !== tx.category) {
+            updated.auto = false;
+            const key = tx.mkey || mk;
+            if (key) {
+              updated.mkey = key;
+              const n = learnCategory(draft.type, key, category, tx.id);
+              const name = tx.merchant || note || 'diesen Händler';
+              msg = `Gemerkt: ${name} → ${L.getCategory(draft.type, category).label}${n ? ` (${n} weitere angepasst)` : ''}`;
+            }
+          }
+          if (i >= 0) list[i] = updated;
+          close();
+          return commit(msg);
+        }
+
+        if (mode === 'tx-new' && repeat === 'none') {
+          const newTx = { id: L.uid(), type: draft.type, amount: cents, category, note, date, createdAt: Date.now(), src: 'manual' };
+          if (mk) newTx.mkey = mk;
+          if (catTouched && mk) learnCategory(draft.type, mk, category, newTx.id);
+          list.push(newTx);
+          close();
+          return commit('Buchung gespeichert');
+        }
+
+        // Dauerauftrag anlegen oder ändern
+        const target = mode === 'rule-edit' ? state.data.recurring.find((r) => r.id === rule.id) : { id: L.uid(), createdAt: Date.now() };
+        if (!target) return close();
+        Object.assign(target, {
           type: draft.type,
           amount: cents,
-          category: L.getCategory(draft.type, draft.category).id,
-          note: $('#f-note', sheet).value.trim().slice(0, 100),
-          date,
-          createdAt: existing ? existing.createdAt : Date.now(),
-        };
-        const list = state.data.transactions;
-        if (existing) {
-          const i = list.findIndex((t) => t.id === existing.id);
-          if (i >= 0) list[i] = tx;
-        } else {
-          list.push(tx);
-        }
+          category,
+          note: note || L.getCategory(draft.type, category).label,
+          mkey: mk,
+          interval: isRule ? repeat : repeat,
+          day: Number(date.slice(8, 10)),
+          nextDate: date,
+          active: true,
+        });
+        if (mode !== 'rule-edit') state.data.recurring.push(target);
+        if (catTouched && mk) learnCategory(draft.type, mk, category, null);
+        const n = runRecurring();
         close();
-        commit(existing ? 'Buchung aktualisiert' : 'Buchung gespeichert');
+        commit(
+          mode === 'rule-edit'
+            ? `Dauerauftrag gespeichert${n ? ` · ${n} gebucht` : ''}`
+            : n
+              ? `Dauerauftrag angelegt · ${n} ${n === 1 ? 'Buchung' : 'Buchungen'} erstellt`
+              : `Dauerauftrag angelegt – erste Buchung am ${L.shortDate(target.nextDate)}`,
+        );
       });
 
       $('#f-delete', sheet)?.addEventListener('click', async () => {
+        if (mode === 'rule-edit') {
+          const ok = await confirmDialog({
+            title: 'Dauerauftrag löschen?',
+            message: `„${rule.note}“ wird künftig nicht mehr automatisch gebucht. Bereits erstellte Buchungen bleiben erhalten.`,
+            confirmLabel: 'Löschen',
+            danger: true,
+          });
+          if (!ok) return;
+          state.data.recurring = state.data.recurring.filter((r) => r.id !== rule.id);
+          close();
+          return commit('Dauerauftrag gelöscht');
+        }
         const ok = await confirmDialog({
           title: 'Buchung löschen?',
-          message: `${L.getCategory(existing.type, existing.category).label} über ${money(existing.amount)} wird endgültig entfernt.`,
+          message: `${tx.note || L.getCategory(tx.type, tx.category).label} über ${money(tx.amount)} wird endgültig entfernt.`,
           confirmLabel: 'Löschen',
           danger: true,
         });
         if (!ok) return;
-        state.data.transactions = state.data.transactions.filter((t) => t.id !== existing.id);
+        state.data.transactions = state.data.transactions.filter((x) => x.id !== tx.id);
         close();
         commit('Buchung gelöscht');
+      });
+    },
+  });
+}
+
+/* ---------- Daueraufträge & Abos ---------- */
+
+function monthlyEquivalent(r) {
+  const f = { weekly: 52 / 12, monthly: 1, quarterly: 1 / 3, yearly: 1 / 12 }[r.interval] || 1;
+  return Math.round(r.amount * f);
+}
+
+function openRecurringList() {
+  const rules = [...state.data.recurring].sort((a, b) => (a.nextDate < b.nextDate ? -1 : 1));
+  const fixOut = rules.filter((r) => r.type === 'expense').reduce((s, r) => s + monthlyEquivalent(r), 0);
+  const fixIn = rules.filter((r) => r.type === 'income').reduce((s, r) => s + monthlyEquivalent(r), 0);
+  const rows = rules
+    .map((r) => {
+      const cat = L.getCategory(r.type, r.category);
+      return `<button type="button" class="settings-row" data-rule="${esc(r.id)}">${catIcon(cat, 18)}
+        <span class="main">${esc(r.note || cat.label)}<span class="sub">${esc(describeRule(r))} · nächste ${esc(L.shortDate(r.nextDate))}</span></span>
+        <span class="amount ${r.type === 'income' ? 'in' : 'out'}">${money(r.type === 'income' ? r.amount : -r.amount, { signed: true })}</span></button>`;
+    })
+    .join('');
+  openSheet({
+    title: 'Daueraufträge & Abos',
+    body: `
+      <p class="muted" style="margin:0">Flowly bucht diese Einträge automatisch zum Termin – du musst nichts tun.</p>
+      ${rules.length ? `<div class="fix-sum"><div><span class="eyebrow">Fixkosten / Monat</span><strong>${money(fixOut)}</strong></div><div><span class="eyebrow">Feste Einnahmen / Monat</span><strong>${money(fixIn)}</strong></div></div>
+        <div class="settings-group">${rows}</div>` : emptyState({ title: 'Noch keine Daueraufträge', art: 'repeat', text: 'Lege Miete, Gehalt oder Abos einmal an. Nach einem Kontoauszug-Import schlägt Flowly wiederkehrende Zahlungen auch selbst vor.', small: true })}
+      <button type="button" class="btn primary block" id="r-new">${icon('plus', 20)}Neuer Dauerauftrag</button>`,
+    onMount(sheet, close) {
+      sheet.addEventListener('click', (e) => {
+        const row = e.target.closest('[data-rule]');
+        if (row) {
+          const r = state.data.recurring.find((x) => x.id === row.dataset.rule);
+          close();
+          if (r) setTimeout(() => openEntrySheet({ rule: r }), 120);
+        }
+      });
+      $('#r-new', sheet).addEventListener('click', () => {
+        close();
+        setTimeout(() => openEntrySheet({ newRule: true }), 120);
+      });
+    },
+  });
+}
+
+function openRecurringSuggestions(suggestions) {
+  const row = (s, i) => {
+    const cat = L.getCategory(s.type, s.category);
+    return `<div class="sugg" data-i="${i}">
+      <div class="sugg-top">${catIcon(cat, 18)}<div class="main"><div class="title">${esc(s.note)}</div>
+        <div class="sub">${esc(describeRule({ interval: s.interval, day: s.day, nextDate: s.nextDate }))} · ${s.count}× gefunden</div></div>
+        <span class="amount ${s.type === 'income' ? 'in' : 'out'}">${money(s.type === 'income' ? s.amount : -s.amount, { signed: true })}</span></div>
+      <div class="sugg-actions"><button type="button" class="btn small" data-sugg="ignore">Ignorieren</button><button type="button" class="btn small primary" data-sugg="save">${icon('repeat', 16)}Als Dauerauftrag</button></div>
+    </div>`;
+  };
+  openSheet({
+    title: 'Wiederkehrende Zahlungen erkannt',
+    body: `<p class="muted" style="margin:0">Diese Zahlungen kommen regelmäßig. Als Dauerauftrag gespeichert, bucht Flowly sie künftig automatisch – und erkennt sie beim nächsten Import als bereits erfasst.</p>
+      <div class="stack" id="sugg-list">${suggestions.map(row).join('')}</div>`,
+    onMount(sheet, close) {
+      let open = suggestions.length;
+      $('#sugg-list', sheet).addEventListener('click', (e) => {
+        const b = e.target.closest('[data-sugg]');
+        if (!b) return;
+        const box = b.closest('.sugg');
+        const s = suggestions[Number(box.dataset.i)];
+        if (b.dataset.sugg === 'save') {
+          state.data.recurring.push({
+            id: L.uid(), type: s.type, amount: s.amount, category: s.category, note: s.note, mkey: s.mkey,
+            interval: s.interval, day: s.day || Number(s.nextDate.slice(8, 10)), nextDate: s.nextDate, active: true, createdAt: Date.now(),
+          });
+          runRecurring();
+          box.innerHTML = `<div class="sugg-done">${icon('check', 18)}${esc(s.note)} als Dauerauftrag gespeichert</div>`;
+        } else {
+          state.data.dismissedSuggestions.push(s.key);
+          box.remove();
+        }
+        saveState(state.data);
+        render();
+        if (--open === 0) setTimeout(close, 700);
+      });
+    },
+  });
+}
+
+/* ---------- Import ---------- */
+
+function daysSince(ms) {
+  return Math.floor((Date.now() - ms) / 86400000);
+}
+
+function importStatus() {
+  const last = state.data.importInfo.lastImportAt;
+  if (!last) return { text: 'Noch kein Import – richte einmalig die Automatik ein.', stale: false, never: true };
+  const d = daysSince(last);
+  const when = d <= 0 ? 'heute' : d === 1 ? 'gestern' : `vor ${d} Tagen`;
+  return d > 7 ? { text: `Letzter Import ${when} – Zeit für ein Update`, stale: true } : { text: `Letzter Import ${when}`, stale: false };
+}
+
+function importCard() {
+  const st = importStatus();
+  return `<section class="card import-card${st.stale ? ' stale' : ''}">
+    <div class="import-top">
+      <span class="badge in">${icon('download', 18)}</span>
+      <div class="main"><div class="title">Zahlungen importieren</div>
+        <div class="sub${st.stale ? ' warn' : ''}">${st.stale ? icon('alert', 13, 'inline') + ' ' : ''}${esc(st.text)}</div></div>
+    </div>
+    <button type="button" class="btn primary block" data-action="import">${icon('download', 20)}Neue Zahlungen importieren</button>
+    <div class="import-links"><span>Apple-Pay-Datei oder Kontoauszug (CSV)</span><button type="button" class="link" data-action="open-automation">${st.never ? 'Automatik einrichten' : 'Anleitung'}</button></div>
+  </section>`;
+}
+
+function pickImportFile() {
+  const input = $('#import-file');
+  input.value = '';
+  input.click();
+}
+
+async function handleImportFile(file) {
+  if (file.size > 15 * 1024 * 1024) return toast('Die Datei ist zu groß.', true);
+  let result;
+  try {
+    const text = decodeBytes(await file.arrayBuffer());
+    result = buildCandidates(parseImportText(text), state.data);
+  } catch (err) {
+    return toast(err?.message || 'Datei konnte nicht gelesen werden.', true);
+  }
+  openImportPreview(result);
+}
+
+function openCategoryPicker(type, current, onPick) {
+  openSheet({
+    title: 'Kategorie wählen',
+    body: `<div class="cat-grid">${L.categoriesFor(type)
+      .map((c) => `<button type="button" class="cat-btn" aria-checked="${c.id === current}" data-cat="${c.id}" style="--c:${c.color}">${catIcon(c, 20)}<span class="lbl">${esc(c.label)}</span></button>`)
+      .join('')}</div>
+      <p class="settings-note">Flowly merkt sich die Wahl für diesen Händler.</p>`,
+    onMount(sheet, close) {
+      sheet.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-cat]');
+        if (!b) return;
+        onPick(b.dataset.cat);
+        close();
+      });
+    },
+  });
+}
+
+function openImportPreview(result) {
+  const list = result.candidates;
+  const dupCount = list.filter((c) => c.duplicateOf).length;
+  const markChecked = () => {
+    state.data.importInfo.lastImportAt = Date.now();
+    rememberSeen(state.data, list.map((c) => c.key));
+  };
+
+  if (!list.length) {
+    markChecked();
+    saveState(state.data);
+    render();
+    return toast(result.known ? `Keine neuen Zahlungen (${result.known} schon importiert)` : 'Keine Zahlungen in der Datei gefunden');
+  }
+
+  const rowHtml = (c, i) => {
+    const cat = L.getCategory(c.type, c.category);
+    const isIn = c.type === 'income';
+    const catNote = c.catSource === 'learned' ? ' · gemerkt' : c.catSource === 'manual' ? ' · geändert' : c.catSource === 'default' ? ' · bitte prüfen' : '';
+    return `<div class="imp-row${c.selected ? '' : ' off'}" data-i="${i}">
+      <button type="button" class="imp-check" data-imp="toggle" aria-pressed="${c.selected}" aria-label="Übernehmen">${icon('check', 16)}</button>
+      <button type="button" class="imp-cat" data-imp="cat" aria-label="Kategorie ändern">${catIcon(cat, 18)}</button>
+      <div class="main"><div class="title">${esc(c.name)}</div>
+        <div class="sub">${esc(L.shortDate(c.date))}${c.time ? ` ${esc(c.time.slice(0, 5))}` : ''} · ${esc(cat.label)}${catNote}</div>
+        ${c.duplicateOf ? `<div class="dup">${icon('alert', 12, 'inline')} Schon erfasst? ${esc(c.duplicateOf.label || 'Buchung')} · ${esc(L.shortDate(c.duplicateOf.date))} · ${money(c.duplicateOf.amount)}</div>` : ''}
+      </div>
+      <span class="amount ${isIn ? 'in' : 'out'}">${money(isIn ? c.amount : -c.amount, { signed: true })}</span>
+    </div>`;
+  };
+  const shown = list.slice(0, 500);
+
+  openSheet({
+    title: result.format === 'applepay' ? 'Apple-Pay-Zahlungen' : 'Kontoauszug importieren',
+    body: `
+      <div class="import-summary">
+        <div><span class="eyebrow">Erkannt</span><strong>${esc(result.label)}</strong></div>
+        <div class="chips-row">
+          <span class="pill">${list.length} neu</span>
+          ${result.known ? `<span class="pill neutral">${result.known} schon importiert</span>` : ''}
+          ${dupCount ? `<span class="pill neg">${dupCount === 1 ? '1 mögliches Duplikat' : `${dupCount} mögliche Duplikate`}</span>` : ''}
+          ${result.pending ? `<span class="pill neutral">${result.pending} vorgemerkt übersprungen</span>` : ''}
+        </div>
+        <p class="muted" style="margin:8px 0 0;font-size:13px">Tippe auf ein Symbol, um die Kategorie zu ändern. Mögliche Duplikate sind abgewählt.</p>
+      </div>
+      <div class="imp-tools"><button type="button" class="link" data-imp="all">Alle auswählen</button><button type="button" class="link" data-imp="none">Keine</button></div>
+      <div class="imp-list" id="imp-list">${shown.map(rowHtml).join('')}</div>
+      ${list.length > shown.length ? `<p class="settings-note">${list.length - shown.length} weitere Einträge werden ebenfalls übernommen.</p>` : ''}
+      <div class="sheet-cta"><button type="button" class="btn primary block" id="imp-go"></button></div>`,
+    onMount(sheet, close) {
+      const listEl = $('#imp-list', sheet);
+      const go = $('#imp-go', sheet);
+      const paintButton = () => {
+        const n = list.filter((c) => c.selected).length;
+        go.innerHTML = `${icon('check', 20)}${n} ${n === 1 ? 'Buchung' : 'Buchungen'} übernehmen`;
+        go.disabled = false;
+      };
+      const repaint = (i) => {
+        const el = listEl.querySelector(`[data-i="${i}"]`);
+        if (el) el.outerHTML = rowHtml(list[i], i);
+      };
+      paintButton();
+
+      sheet.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-imp]');
+        if (!b) return;
+        const act = b.dataset.imp;
+        if (act === 'all' || act === 'none') {
+          list.forEach((c) => (c.selected = act === 'all'));
+          listEl.innerHTML = shown.map(rowHtml).join('');
+          return paintButton();
+        }
+        const i = Number(b.closest('[data-i]').dataset.i);
+        const c = list[i];
+        if (act === 'toggle') {
+          c.selected = !c.selected;
+          repaint(i);
+          return paintButton();
+        }
+        if (act === 'cat') {
+          openCategoryPicker(c.type, c.category, (cat) => {
+            c.category = cat;
+            c.catSource = 'manual';
+            // Gleiche Händler in dieser Liste mitziehen
+            list.forEach((o, j) => {
+              if (o !== c && o.mkey && o.mkey === c.mkey && o.type === c.type && o.catSource !== 'manual') {
+                o.category = cat;
+                o.catSource = 'learned';
+                repaint(j);
+              }
+            });
+            repaint(i);
+          });
+        }
+      });
+
+      go.addEventListener('click', () => {
+        const chosen = list.filter((c) => c.selected);
+        for (const c of list) if (c.catSource === 'manual' && c.mkey) learnCategory(c.type, c.mkey, c.category, null);
+        for (const c of chosen) state.data.transactions.push(candidateToTransaction(c, L.uid));
+        markChecked();
+        const suggestions = detectRecurring(state.data, L.todayISO());
+        close();
+        commit(chosen.length ? `${chosen.length} ${chosen.length === 1 ? 'Buchung' : 'Buchungen'} importiert` : 'Import abgeschlossen');
+        if (suggestions.length) setTimeout(() => openRecurringSuggestions(suggestions), 500);
+      });
+    },
+  });
+}
+
+/* ---------- Anleitung „Automatik einrichten“ ---------- */
+
+function copyBtn(text) {
+  return `<button type="button" class="copy" data-copy="${esc(text)}">${esc(text)}<span>Kopieren</span></button>`;
+}
+
+function openAutomationGuide() {
+  const step = (n, html) => `<li><span class="n">${n}</span><div>${html}</div></li>`;
+  openSheet({
+    title: 'Automatik einrichten',
+    body: `
+      <p class="muted" style="margin:0">Einmal einrichten (ca. 5 Minuten): Danach schreibt dein iPhone jede Apple-Pay-Zahlung automatisch in eine Datei auf deinem iPhone. Flowly liest sie beim Import – ohne Server, ohne Bankverbindung, ohne Upload. Voraussetzung: iOS 17 oder neuer.</p>
+
+      <h3 class="guide-h">A · Ordner anlegen</h3>
+      <ol class="guide">
+        ${step(1, 'Öffne die App <b>Dateien</b>.')}
+        ${step(2, 'Tippe unten auf <b>Durchsuchen</b> und dann auf <b>Auf meinem iPhone</b>.')}
+        ${step(3, 'Tippe oben rechts auf <b>•••</b> → <b>Neuer Ordner</b>, nenne ihn <b>Flowly</b> und tippe auf <b>Fertig</b>.')}
+      </ol>
+
+      <h3 class="guide-h">B · Automation anlegen</h3>
+      <ol class="guide">
+        ${step(1, 'Öffne die App <b>Kurzbefehle</b> und tippe unten auf <b>Automation</b>.')}
+        ${step(2, 'Tippe oben rechts auf <b>+</b> (oder auf <b>Neue Automation</b>).')}
+        ${step(3, 'Wähle <b>Transaktion</b>.')}
+        ${step(4, 'Wähle bei <b>Karten</b> alle Karten aus, mit denen du bezahlst. <b>Kategorien</b> und <b>Händler</b> lässt du auf „Beliebig“.')}
+        ${step(5, 'Wähle unten <b>Sofort ausführen</b> und schalte <b>Bei Ausführung benachrichtigen</b> aus. Tippe auf <b>Weiter</b>.')}
+        ${step(6, 'Tippe auf <b>Neuer leerer Kurzbefehl</b>.')}
+      </ol>
+
+      <h3 class="guide-h">C · Vier Aktionen hinzufügen</h3>
+      <p class="muted" style="margin:0 0 8px;font-size:14px">Jede Aktion findest du über das Suchfeld <b>„Nach Apps und Aktionen suchen“</b>.</p>
+      <ol class="guide">
+        ${step(1, `Aktion <b>Datum formatieren</b>: Tippe auf „Datum“ und wähle <b>Aktuelles Datum</b>. Tippe auf den Pfeil <b>›</b>, setze <b>Datumsformat</b> auf <b>Eigene</b> und trage bei <b>Formatzeichenfolge</b> ein: ${copyBtn('yyyy-MM-dd;HH:mm:ss')}`)}
+        ${step(2, `Aktion <b>Zufallszahl</b>: Minimum ${copyBtn('1')} Maximum ${copyBtn('999999999')}`)}
+        ${step(3, `Aktion <b>Text</b>. Baue den Inhalt so auf – ohne Leerzeichen:
+          <div class="formula"><span class="var">Formatiertes Datum</span>;<span class="var">Betrag</span>;<span class="var">Händler</span>;<span class="var">Zufallszahl</span></div>
+          So geht's: Tippe ins Textfeld. Über der Tastatur erscheinen Variablen – tippe <b>Formatiertes Datum</b>, dann ein <b>;</b>. Füge <b>Kurzbefehleingabe</b> ein, tippe auf das blaue Feld und wähle <b>Betrag</b>, dann <b>;</b>. Füge noch einmal <b>Kurzbefehleingabe</b> ein und wähle <b>Händler</b>, dann <b>;</b>. Zum Schluss <b>Zufallszahl</b> einfügen. (Nicht sichtbar? Lange ins Feld tippen → <b>Variable auswählen</b>.)`)}
+        ${step(4, `Aktion <b>An Textdatei anhängen</b>: Als Text ist <b>Text</b> eingetragen. Tippe auf den Ordner (zeigt meist „Kurzbefehle“) und wähle <b>Auf meinem iPhone › Flowly</b>. Bei <b>Dateipfad</b>: ${copyBtn('eingang.csv')} Schalte <b>Neue Zeile anlegen</b> ein.`)}
+        ${step(5, 'Tippe oben rechts auf <b>Fertig</b>. Fertig – ab jetzt läuft alles ohne Nachfrage.')}
+      </ol>
+
+      <h3 class="guide-h">D · Importieren</h3>
+      <ol class="guide">
+        ${step(1, 'Bezahle wie gewohnt mit Apple Pay.')}
+        ${step(2, 'Tippe in Flowly in der Übersicht auf <b>Neue Zahlungen importieren</b>.')}
+        ${step(3, 'Wähle <b>Durchsuchen › Auf meinem iPhone › Flowly › eingang.csv</b>. Flowly übernimmt nur neue Zahlungen – die Datei darf einfach weiterwachsen.')}
+      </ol>
+
+      <h3 class="guide-h">E · Kontoauszug (Überweisungen, Lastschriften)</h3>
+      <ol class="guide">
+        ${step(1, 'Öffne dein Online-Banking (Banking-App oder Safari) und exportiere die Umsätze als <b>CSV</b>. Tipp: Viele Banken bieten das nur auf der Website an – in Safari über <b>aA › Desktop-Website anfordern</b>.')}
+        ${step(2, 'Sichere die Datei mit <b>In Dateien sichern</b> unter <b>Auf meinem iPhone › Flowly</b>.')}
+        ${step(3, 'Tippe in Flowly auf <b>Neue Zahlungen importieren</b> und wähle die Datei. Flowly erkennt das Format (Sparkasse, Volksbank, ING, DKB, Commerzbank, N26, comdirect u. a.) und zeigt dir vorher eine Vorschau.')}
+      </ol>
+
+      <div class="privacy-card">
+        <div class="privacy-head">${icon('lock', 18)}<strong>Datenschutz</strong></div>
+        <ul>
+          <li>„Auf meinem iPhone“ bleibt nur auf diesem Gerät.</li>
+          <li>Wählst du stattdessen <b>iCloud Drive</b>, wird die Datei über Apples Server synchronisiert. Für „nur lokal“ also „Auf meinem iPhone“ verwenden.</li>
+          <li>Bietet dein iOS in Schritt C4 nur den Ordner „Kurzbefehle“ an, liegt die Datei in iCloud Drive › Kurzbefehle – das funktioniert, wird aber mit iCloud synchronisiert.</li>
+        </ul>
+      </div>`,
+    onMount(sheet) {
+      sheet.addEventListener('click', async (e) => {
+        const b = e.target.closest('[data-copy]');
+        if (!b) return;
+        try {
+          await navigator.clipboard.writeText(b.dataset.copy);
+          toast('Kopiert');
+        } catch {
+          toast('Kopieren nicht möglich – bitte abtippen', true);
+        }
+      });
+    },
+  });
+}
+
+/* ---------- Gelernte Kategorien ---------- */
+
+function openLearnedList() {
+  const entries = Object.entries(state.data.learned).sort((a, b) => a[0].localeCompare(b[0]));
+  openSheet({
+    title: 'Gelernte Kategorien',
+    body: `<p class="muted" style="margin:0">Wenn du bei einem Händler die Kategorie änderst, merkt Flowly sich das hier.</p>
+      ${entries.length
+        ? `<div class="settings-group">${entries
+            .map(([k, v]) => {
+              const [type, mkey] = k.split(':');
+              const cat = L.getCategory(type, v);
+              return `<div class="settings-row" data-key="${esc(k)}">${catIcon(cat, 18)}<span class="main">${esc(mkey)}<span class="sub">${type === 'income' ? 'Einnahme' : 'Ausgabe'} → ${esc(cat.label)}</span></span><button type="button" class="icon-btn plain" data-forget="${esc(k)}" aria-label="Vergessen">${icon('x', 18)}</button></div>`;
+            })
+            .join('')}</div>`
+        : emptyState({ title: 'Noch nichts gelernt', art: 'sparkle', text: 'Ändere bei einer importierten Buchung die Kategorie – Flowly übernimmt das künftig automatisch.', small: true })}`,
+    onMount(sheet) {
+      sheet.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-forget]');
+        if (!b) return;
+        delete state.data.learned[b.dataset.forget];
+        b.closest('.settings-row').remove();
+        saveState(state.data);
       });
     },
   });
@@ -813,6 +1328,14 @@ function openSettingsSheet() {
       <div class="form-error" id="s-error"></div>
       <button type="button" class="btn primary block" id="s-save">${icon('check', 20)}Speichern</button>
 
+      <h3 class="section-title" style="margin-bottom:0">Automatik</h3>
+      <div class="settings-group">
+        <button type="button" class="settings-row" id="s-auto"><span class="ri">${icon('sparkle', 18)}</span><span class="main">Automatik einrichten<span class="sub">Apple-Pay-Zahlungen per Kurzbefehl erfassen</span></span>${icon('chevronRight', 18)}</button>
+        <button type="button" class="settings-row" id="s-csv"><span class="ri">${icon('download', 18)}</span><span class="main">Zahlungen importieren<span class="sub">Apple-Pay-Datei oder Kontoauszug (CSV)</span></span>${icon('chevronRight', 18)}</button>
+        <button type="button" class="settings-row" id="s-rec"><span class="ri">${icon('repeat', 18)}</span><span class="main">Daueraufträge & Abos<span class="sub">${state.data.recurring.length} angelegt</span></span>${icon('chevronRight', 18)}</button>
+        <button type="button" class="settings-row" id="s-learned"><span class="ri">${icon('pencil', 18)}</span><span class="main">Gelernte Kategorien<span class="sub">${Object.keys(state.data.learned).length} Händler gemerkt</span></span>${icon('chevronRight', 18)}</button>
+      </div>
+
       <h3 class="section-title" style="margin-bottom:0">Daten</h3>
       <div class="settings-group">
         <button type="button" class="settings-row" id="s-export"><span class="ri">${icon('download', 18)}</span><span class="main">Backup exportieren<span class="sub">Als JSON-Datei auf diesem Gerät speichern (Dateien › Downloads)</span></span></button>
@@ -834,9 +1357,10 @@ function openSettingsSheet() {
           <li>Kein Server, kein Konto, kein Tracking, keine Analytics, keine Cookies.</li>
           <li>Flowly baut keine Verbindungen zu fremden Diensten auf.</li>
           <li>Backups werden nur als Datei auf deinem Gerät abgelegt – nie hochgeladen.</li>
+          <li>Importierte Dateien werden nur gelesen, nie verschickt.</li>
         </ul>
       </div>
-      <p class="settings-note">Flowly · Version 1.1</p>`,
+      <p class="settings-note">Flowly · Version 1.2</p>`,
     onMount(sheet, close) {
       const startInput = $('#s-start', sheet);
       amountInputHandler(startInput);
@@ -855,6 +1379,16 @@ function openSettingsSheet() {
       });
 
       $('#s-export', sheet).addEventListener('click', exportBackup);
+      $('#s-auto', sheet).addEventListener('click', openAutomationGuide);
+      $('#s-csv', sheet).addEventListener('click', () => {
+        close();
+        pickImportFile();
+      });
+      $('#s-rec', sheet).addEventListener('click', () => {
+        close();
+        setTimeout(openRecurringList, 120);
+      });
+      $('#s-learned', sheet).addEventListener('click', openLearnedList);
       $('#s-lock', sheet).addEventListener('click', () =>
         openLockSettings(() => {
           const el = $('#s-lock-state', sheet);
@@ -959,10 +1493,19 @@ document.addEventListener('click', (e) => {
       switchTab(el.dataset.tab);
       break;
     case 'open-add':
-      openTransactionSheet();
+      openEntrySheet();
       break;
     case 'open-settings':
       openSettingsSheet();
+      break;
+    case 'import':
+      pickImportFile();
+      break;
+    case 'open-automation':
+      openAutomationGuide();
+      break;
+    case 'open-recurring':
+      openRecurringList();
       break;
     case 'month-prev':
       state.month = L.addMonths(state.month, -1);
@@ -980,7 +1523,7 @@ document.addEventListener('click', (e) => {
       break;
     case 'edit-tx': {
       const tx = state.data.transactions.find((t) => t.id === el.dataset.id);
-      if (tx) openTransactionSheet(tx);
+      if (tx) openEntrySheet({ tx });
       break;
     }
     case 'load-sample':
@@ -1272,6 +1815,29 @@ try {
   /* optional */
 }
 
+/** Fällige Daueraufträge buchen (beim Start und wenn die App wieder geöffnet wird). */
+function processDue({ silent = false } = {}) {
+  const n = runRecurring();
+  if (!n) return;
+  saveState(state.data);
+  if (!silent) toast(`${n} ${n === 1 ? 'Dauerauftrag' : 'Daueraufträge'} automatisch gebucht`);
+}
+
+$('#import-file').addEventListener('change', (e) => {
+  const f = e.target.files?.[0];
+  e.target.value = '';
+  if (f) handleImportFile(f);
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && unlocked) {
+    const before = state.data.transactions.length;
+    processDue();
+    if (state.data.transactions.length !== before) render();
+  }
+});
+
+processDue({ silent: true });
 if (unlocked) render();
 else {
   renderTabbar();

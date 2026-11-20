@@ -11,6 +11,11 @@ Finanz-App als Progressive Web App, optimiert fürs iPhone. Reines HTML, CSS und
 - **Budgets:** Monatslimit pro Kategorie, Warnfarbe ab 90 % und über 100 %
 - **Sparziele:** anlegen, Geld hinzufügen, löschen
 - **Einstellungen:** Name, Startguthaben, JSON-Backup exportieren/importieren, alle Daten löschen
+- **Automatik:** Apple-Pay-Zahlungen per Kurzbefehl-Automation „Transaktion“ in eine lokale Datei schreiben und mit einem Tipp importieren (nur neue Einträge)
+- **Kontoauszug-Import (CSV):** erkennt Sparkasse, Volksbank/Raiffeisen (neu & alt), ING, DKB, Commerzbank, N26, comdirect, Deutsche Bank/Postbank; Vorschau, Duplikaterkennung (auch gegenüber Apple Pay und Daueraufträgen)
+- **Automatische Kategorien** nach Händler/Verwendungszweck; Korrekturen werden pro Händler gelernt
+- **Daueraufträge & Abos:** einmal anlegen, Flowly bucht automatisch; wiederkehrende Zahlungen werden nach dem Import erkannt und vorgeschlagen
+- **Erinnerung**, wenn der letzte Import länger als 7 Tage her ist
 - Offline-fähig (Service Worker), alle Daten bleiben lokal im Browser (localStorage)
 
 ## Datenschutz
@@ -19,6 +24,7 @@ Finanz-App als Progressive Web App, optimiert fürs iPhone. Reines HTML, CSS und
 - **Kein Tracking, keine Analytics, keine Cookies, keine externen Dienste.** Auch die Schriften sind lokal eingebunden.
 - Eine **Content-Security-Policy** in `index.html` verbietet technisch jede Verbindung zu fremden Servern (`connect-src 'self'`).
 - **Backups** werden nur als Datei auf dem Gerät gespeichert (Download), nie hochgeladen. `.gitignore` verhindert, dass Backup-Dateien versehentlich ins Repository gelangen.
+- **Importierte Dateien** (Apple-Pay-Datei, Kontoauszug) werden nur lokal gelesen. Empfohlener Ablageort: „Auf meinem iPhone“ statt iCloud Drive, damit nichts synchronisiert wird.
 - **Beispieldaten** sind frei erfunden und werden im Code erzeugt.
 - **Optionale App-Sperre:** 4-stellige PIN beim Öffnen. Gespeichert wird nur ein PBKDF2-Hash mit zufälligem Salt; nach 5 Fehlversuchen gibt es eine Wartezeit. Die Sperre ist ein Sichtschutz – die Daten selbst sind nicht verschlüsselt.
 - GitHub Pages liefert nur die App-Dateien aus. Wie jeder Webserver sieht GitHub dabei technische Zugriffsdaten (z. B. IP-Adresse) beim Laden der App, aber niemals deine Finanzdaten.
@@ -41,6 +47,9 @@ npm test                      # Logik-Tests (Node 20+, keine Abhängigkeiten)
 | `js/logic.js` | Reine Logik: Beträge, Monate, Summen, Budgets, Import-Prüfung |
 | `js/store.js` | Speicherung (localStorage, mit try/catch) |
 | `js/lock.js` | Optionale PIN-Sperre (PBKDF2-Hash, Fehlversuch-Sperre) |
+| `js/importer.js` | Apple-Pay-Datei & Bank-CSV lesen, Formaterkennung, Duplikate |
+| `js/categorize.js` | Automatische Kategorien & gelernte Händler |
+| `js/recurring.js` | Daueraufträge buchen, wiederkehrende Zahlungen erkennen |
 | `js/app.js` | Oberfläche, Tabs, Bottom-Sheets, Dialoge |
 | `js/charts.js` | SVG-Diagramme |
 | `sw.js` | Service Worker (Offline-Cache) |

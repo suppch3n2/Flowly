@@ -4,3 +4,8 @@ flowly-backup-*.json
 *.backup
 node_modules/
 .DS_Store
+# Keine echten Kontoauszüge oder Apple-Pay-Dateien einchecken
+eingang.csv
+*umsaetze*.csv
+*Umsaetze*.csv
+*kontoauszug*.csv
