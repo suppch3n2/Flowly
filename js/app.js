@@ -167,8 +167,8 @@ function renderStart() {
   series[series.length - 1] = { key: nowKey, value: balance };
   const limit = settings.monthlyLimit ? L.limitForMonth(settings, nowKey) : 0;
   const month = L.monthSummary(transactions, nowKey);
-  // Mit Limit: Rest vom Limit. Ohne Limit: Plus/Minus des Monats. Immer nur Vorzeichen + Zahl.
-  const delta = settings.monthlyLimit ? limit - month.expense : month.net;
+  // Mit Limit: Kontostand minus Limit. Ohne Limit: Plus/Minus des Monats. Immer nur Vorzeichen + Zahl.
+  const delta = settings.monthlyLimit ? balance - limit : month.net;
   const tone = delta < 0 ? 'neg' : 'pos';
   const recent = L.sortTransactions(transactions.filter((t) => t.date <= today)).slice(0, 8);
   const name = settings.name.trim();
@@ -177,7 +177,7 @@ function renderStart() {
     <section class="hero ${tone}" id="hero">
       <div class="hero-label" id="hero-label">${esc(name ? `${L.greeting()}, ${name}` : L.greeting())}</div>
       <div class="hero-value" id="hero-value">${money(balance)}</div>
-      <button type="button" class="hero-delta" data-action="edit-limit" aria-label="${settings.monthlyLimit ? 'Rest vom Ausgaben-Limit' : 'Plus oder Minus in diesem Monat'}, antippen zum Ändern des Limits">${money(delta, { signed: true })}</button>
+      <button type="button" class="hero-delta" data-action="edit-limit" aria-label="${settings.monthlyLimit ? 'Kontostand über oder unter dem Limit' : 'Plus oder Minus in diesem Monat'}, antippen zum Ändern des Limits">${money(delta, { signed: true })}</button>
       ${areaChart(series, series.length - 1, tone === 'pos' ? '#6EE7B7' : '#F87171')}
     </section>
 
