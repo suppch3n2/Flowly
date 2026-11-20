@@ -15,7 +15,9 @@ Finanz-App als Progressive Web App, optimiert fürs iPhone. Reines HTML, CSS und
 - **Kontoauszug-Import (CSV):** erkennt Sparkasse, Volksbank/Raiffeisen (neu & alt), ING, DKB, Commerzbank, N26, comdirect, Deutsche Bank/Postbank; Vorschau, Duplikaterkennung (auch gegenüber Apple Pay und Daueraufträgen)
 - **Automatische Kategorien** nach Händler/Verwendungszweck; Korrekturen werden pro Händler gelernt
 - **Daueraufträge & Abos:** einmal anlegen, Flowly bucht automatisch; wiederkehrende Zahlungen werden nach dem Import erkannt und vorgeschlagen
-- **Erinnerung**, wenn der letzte Import länger als 7 Tage her ist
+- **Erinnerung**, wenn der letzte Import länger als 7 Tage her ist – wegklickbar; wer lieber selbst einträgt, blendet den Import ganz aus
+- **Ausgaben-Limit pro Monat:** grün mit „+ … übrig“, rot mit „− … zu viel ausgegeben“
+- **Geplante Buchungen:** Geld an einem bestimmten Datum dazu oder ab – wird an dem Tag automatisch gebucht
 - Offline-fähig (Service Worker), alle Daten bleiben lokal im Browser (localStorage)
 
 ## Datenschutz

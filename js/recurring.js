@@ -4,6 +4,7 @@
 import { addMonths, monthKeyOf, toISODate, getCategory } from './logic.js';
 
 export const INTERVALS = [
+  { id: 'once', label: 'Einmalig (geplant)' },
   { id: 'weekly', label: 'Wöchentlich' },
   { id: 'monthly', label: 'Monatlich' },
   { id: 'quarterly', label: 'Vierteljährlich' },
@@ -28,6 +29,7 @@ function dateInMonth(key, day) {
 
 /** Nächster Termin nach `fromDate` gemäß Intervall. */
 export function nextOccurrence(rule, fromDate) {
+  if (rule.interval === 'once') return '9999-12-31';
   if (rule.interval === 'weekly') {
     const d = parse(fromDate);
     d.setDate(d.getDate() + 7);
@@ -46,6 +48,10 @@ export function firstOnOrAfter(day, date, interval = 'monthly') {
 }
 
 export function describeRule(rule) {
+  if (rule.interval === 'once') {
+    const [y, m, d] = rule.nextDate.split('-');
+    return `Einmalig am ${d}.${m}.${y}`;
+  }
   const label = INTERVALS.find((i) => i.id === rule.interval)?.label || 'Monatlich';
   if (rule.interval === 'weekly') {
     const wd = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'][parse(rule.nextDate).getDay()];
@@ -88,9 +94,15 @@ export function applyRecurring(data, today, uid) {
         existing.add(extId);
         created.push(tx);
       }
+      if (rule.interval === 'once') {
+        rule.done = true;
+        break;
+      }
       rule.nextDate = nextOccurrence(rule, rule.nextDate);
     }
   }
+  // Einmalig geplante Buchungen sind nach dem Buchen erledigt
+  if (data.recurring) data.recurring = data.recurring.filter((r) => !(r.interval === 'once' && r.done));
   return created;
 }
 

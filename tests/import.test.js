@@ -394,3 +394,36 @@ test('Gespeicherte Automatik-Daten überstehen Export/Import (sanitizeData)', ()
   // Beispieldaten: Daueraufträge sind schon gebucht -> applyRecurring erzeugt heute nichts doppelt
   assert.equal(R.applyRecurring(clean, '2026-11-20', L.uid).length, 0);
 });
+
+test('Einmalig geplante Buchung wird erst am Stichtag gebucht und danach entfernt', () => {
+  const data = L.createEmptyState();
+  data.recurring.push({ id: 'bonus', type: 'income', amount: 50000, category: 'sonstiges', note: 'Steuererstattung', interval: 'once', day: 24, nextDate: '2026-12-24', active: true });
+  assert.equal(R.applyRecurring(data, '2026-12-23', L.uid).length, 0);
+  assert.equal(data.recurring.length, 1);
+  assert.equal(R.describeRule(data.recurring[0]), 'Einmalig am 24.12.2026');
+  const created = R.applyRecurring(data, '2026-12-30', L.uid);
+  assert.deepEqual(created.map((t) => [t.date, t.amount, t.type]), [['2026-12-24', 50000, 'income']]);
+  assert.equal(data.recurring.length, 0);
+  assert.equal(R.applyRecurring(data, '2027-01-30', L.uid).length, 0);
+  // Übersteht Export/Import
+  data.recurring.push({ id: 'x', type: 'expense', amount: 100, category: 'abos', note: 'Test', interval: 'once', day: 1, nextDate: '2027-02-01', active: true });
+  assert.equal(L.sanitizeData(JSON.parse(JSON.stringify(data))).recurring[0].interval, 'once');
+});
+
+test('Ausgaben-Limit: übrig (grün) oder überschritten (rot)', () => {
+  assert.equal(L.limitStatus(50000, 0), null);
+  assert.deepEqual(L.limitStatus(118000, 150000), { limit: 150000, spent: 118000, remaining: 32000, over: false, ratio: 118000 / 150000 });
+  const over = L.limitStatus(158000, 150000);
+  assert.deepEqual([over.remaining, over.over], [-8000, true]);
+  assert.equal(L.formatMoney(over.remaining, { signed: true }), '−80,00 €');
+  assert.equal(L.formatMoney(32000, { signed: true }), '+320,00 €');
+  assert.equal(L.limitStatus(150000, 150000).over, false); // genau erreicht = noch grün
+  // Mit echten Monatsdaten
+  const sum = L.monthSummary(L.generateSampleData('2026-11-20').transactions, '2026-10');
+  assert.equal(L.limitStatus(sum.expense, 180000).spent, sum.expense);
+  // Einstellungen werden geprüft
+  const clean = L.sanitizeData({ transactions: [], settings: { monthlyLimit: 150000, hideImport: true } });
+  assert.deepEqual([clean.settings.monthlyLimit, clean.settings.hideImport], [150000, true]);
+  const bad = L.sanitizeData({ transactions: [], settings: { monthlyLimit: -5, hideImport: 'ja' } });
+  assert.deepEqual([bad.settings.monthlyLimit, bad.settings.hideImport], [0, false]);
+});

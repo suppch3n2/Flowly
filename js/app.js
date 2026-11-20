@@ -82,10 +82,17 @@ function emptyState({ title, text, art = 'sparkle', actions = '', small = false 
   </div>`;
 }
 
-const sampleButtons = `
-  <button type="button" class="btn primary block" data-action="import">${icon('download', 20)}Neue Zahlungen importieren</button>
-  <button type="button" class="btn block" data-action="open-automation">${icon('sparkle', 20)}Automatik einrichten</button>
-  <button type="button" class="btn block" data-action="load-sample">${icon('database', 20)}Beispieldaten laden</button>`;
+function startButtons() {
+  if (state.data.settings.hideImport) {
+    return `<button type="button" class="btn primary block" data-action="open-add">${icon('plus', 20)}Erste Buchung eintragen</button>
+      <button type="button" class="btn block" data-action="load-sample">${icon('database', 20)}Beispieldaten laden</button>
+      <button type="button" class="link center-link" data-action="show-import">Doch lieber automatisch importieren?</button>`;
+  }
+  return `<button type="button" class="btn primary block" data-action="import">${icon('download', 20)}Neue Zahlungen importieren</button>
+    <button type="button" class="btn block" data-action="manual-mode">${icon('pencil', 20)}Zahlen selbst eintragen</button>
+    <button type="button" class="btn block" data-action="open-automation">${icon('sparkle', 20)}Automatik einrichten</button>
+    <button type="button" class="btn block" data-action="load-sample">${icon('database', 20)}Beispieldaten laden</button>`;
+}
 
 /* ---------- Kopfzeile & Tabs ---------- */
 
@@ -129,8 +136,10 @@ function renderOverview() {
     return `<div class="stack">${emptyState({
       title: 'Willkommen bei Flowly',
       art: 'trend',
-      text: 'Flowly erfasst deine Apple-Pay-Zahlungen automatisch und liest Kontoauszüge (CSV) ein – alles bleibt auf deinem iPhone. Richte die Automatik einmal ein oder schau dir Flowly mit Beispieldaten an.',
-      actions: sampleButtons,
+      text: settings.hideImport
+        ? 'Trage deine Einnahmen und Ausgaben über das große Plus ein – alles bleibt auf deinem iPhone.'
+        : 'Importiere deine Zahlungen automatisch oder trage sie selbst ein – alles bleibt auf deinem iPhone.',
+      actions: startButtons(),
     })}
     ${!settings.name ? `<button type="button" class="card settings-row" data-action="open-settings" style="border-radius:18px"><span class="ri">${icon('user', 18)}</span><span class="main">Wie heißt du?<span class="sub">Name und Startguthaben in den Einstellungen festlegen</span></span>${icon('chevronRight', 18)}</button>` : ''}
     </div>`;
@@ -154,7 +163,7 @@ function renderOverview() {
   return `<div class="stack">
     ${monthSwitcher()}
 
-    ${importCard()}
+    ${state.data.settings.hideImport ? '' : importCard()}
 
     <section class="card networth" id="networth">
       <div class="eyebrow" id="nw-label">Gesamtvermögen${isNow ? '' : ` · Ende ${esc(L.monthName(month))}`}</div>
@@ -181,6 +190,8 @@ function renderOverview() {
         <div class="bar pos"><span style="width:${(ratePct * 100).toFixed(1)}%"></span></div>
       </section>
     </div>
+
+    ${limitCard(sum.expense, month)}
 
     <section class="card">
       <div class="card-head"><h2>Einnahmen vs. Ausgaben</h2></div>
@@ -211,6 +222,62 @@ function renderOverview() {
   </div>`;
 }
 
+function limitCard(expense, month) {
+  const st = L.limitStatus(expense, state.data.settings.monthlyLimit);
+  if (!st) {
+    return `<button type="button" class="card limit-card unset" data-action="edit-limit">
+      <span class="badge out">${icon('wallet', 18)}</span>
+      <span class="main"><span class="title">Ausgaben-Limit festlegen</span><span class="sub">Lege fest, wie viel du pro Monat höchstens ausgeben willst.</span></span>
+      ${icon('plus', 20)}
+    </button>`;
+  }
+  const cls = st.over ? 'neg' : 'pos';
+  const isNow = month === currentMonth();
+  return `<button type="button" class="card limit-card ${cls}" data-action="edit-limit" aria-label="Ausgaben-Limit bearbeiten">
+    <div class="limit-head"><span class="eyebrow">${st.over ? 'Limit überschritten' : 'Noch verfügbar'} · ${esc(L.monthName(month))}</span>${icon('pencil', 16)}</div>
+    <div class="big limit-value">${money(st.remaining)}</div>
+    <div class="limit-diff">${money(st.remaining, { signed: true })} ${st.over ? 'zu viel ausgegeben' : isNow ? 'übrig bis Monatsende' : 'übrig geblieben'}</div>
+    <div class="bar ${st.over ? 'over' : 'pos'}"><span style="width:${Math.min(100, st.ratio * 100).toFixed(1)}%"></span></div>
+    <div class="limit-foot"><span>Ausgegeben ${money(st.spent)}</span><span>Limit ${money(st.limit)}</span></div>
+  </button>`;
+}
+
+function openLimitSheet() {
+  const limit = state.data.settings.monthlyLimit;
+  openSheet({
+    title: 'Ausgaben-Limit pro Monat',
+    body: `
+      <p class="muted" style="margin:0">So viel willst du pro Monat höchstens ausgeben. Flowly zeigt dir in der Übersicht <b style="color:var(--positive)">grün</b>, wie viel noch übrig ist – und <b style="color:var(--danger)">rot</b>, wenn du drüber bist.</p>
+      <div class="field">
+        <label for="l-amount">Limit pro Monat</label>
+        <div class="amount-field small"><input id="l-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 1.500" maxlength="16" value="${limit ? esc(L.formatAmountInput(limit)) : ''}"><span class="cur">€</span></div>
+        <div class="form-error" id="l-error"></div>
+      </div>
+      <button type="button" class="btn primary block" id="l-save">${icon('check', 20)}Limit speichern</button>
+      ${limit ? `<button type="button" class="btn danger block" id="l-remove">${icon('trash', 20)}Limit entfernen</button>` : ''}`,
+    onMount(sheet, close) {
+      const input = $('#l-amount', sheet);
+      amountInputHandler(input);
+      $('#l-save', sheet).addEventListener('click', () => {
+        const cents = L.parseAmount(input.value);
+        if (cents == null) {
+          input.closest('.amount-field').classList.add('invalid');
+          $('#l-error', sheet).textContent = 'Bitte einen gültigen Betrag eingeben.';
+          return;
+        }
+        state.data.settings.monthlyLimit = cents;
+        close();
+        commit(`Ausgaben-Limit: ${money(cents)} pro Monat`);
+      });
+      $('#l-remove', sheet)?.addEventListener('click', () => {
+        state.data.settings.monthlyLimit = 0;
+        close();
+        commit('Ausgaben-Limit entfernt');
+      });
+    },
+  });
+}
+
 function mountOverview(root) {
   const chart = $('.area-chart', root);
   if (!chart) return;
@@ -235,7 +302,7 @@ function renderTransactions() {
       title: 'Noch keine Buchungen',
       art: 'list',
       text: 'Tippe auf das große Plus unten, um deine erste Einnahme oder Ausgabe zu erfassen.',
-      actions: sampleButtons,
+      actions: startButtons(),
     });
   }
   const filters = [
@@ -248,7 +315,7 @@ function renderTransactions() {
   const fix = rules.filter((r) => r.type === 'expense').reduce((s, r) => s + monthlyEquivalent(r), 0);
   return `<button type="button" class="card rec-entry" data-action="open-recurring">
       <span class="badge pos">${icon('repeat', 18)}</span>
-      <span class="main"><span class="title">Daueraufträge & Abos</span><span class="sub">${rules.length ? `${rules.length} aktiv · ${money(fix)} Fixkosten im Monat` : 'Miete, Gehalt, Abos einmal anlegen – Flowly bucht automatisch'}</span></span>
+      <span class="main"><span class="title">Geplant & Daueraufträge</span><span class="sub">${rules.length ? `${rules.length} geplant · ${money(fix)} Fixkosten im Monat` : 'Geld an einem Datum oder regelmäßig automatisch buchen'}</span></span>
       ${icon('chevronRight', 18)}
     </button>
     <div class="toolbar">
@@ -579,6 +646,11 @@ function amountInputHandler(input) {
   });
 }
 
+function addDays(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return L.toISODate(new Date(y, m - 1, d + n));
+}
+
 const SOURCE_LABEL = { applepay: 'Apple Pay', bank: 'Kontoauszug', recurring: 'Dauerauftrag' };
 
 /** Kategorie gezielt geändert: für den Händler merken und automatisch zugeordnete Buchungen mitziehen. */
@@ -600,14 +672,20 @@ function runRecurring() {
   return applyRecurring(state.data, L.todayISO(), L.uid).length;
 }
 
+function dateHint(date) {
+  if (!L.isValidISODate(date) || date <= L.todayISO()) return 'Tipp: Wähle ein Datum in der Zukunft, dann wird der Betrag erst an diesem Tag gebucht.';
+  return `Geplant: Der Betrag wird am ${L.shortDate(date)} automatisch gebucht.`;
+}
+
 function repeatHint(repeat, date) {
+  if (repeat === 'once' && L.isValidISODate(date)) return `Einmalig am ${L.shortDate(date)} – wird an diesem Tag automatisch gebucht.`;
   if (repeat === 'none' || !L.isValidISODate(date)) return '';
   const r = { interval: repeat, day: Number(date.slice(8, 10)), nextDate: date };
   const due = date <= L.todayISO() ? 'Fällige Termine bis heute werden sofort gebucht.' : `Erste Buchung am ${L.shortDate(date)}.`;
   return `${describeRule(r)} – automatisch. ${due}`;
 }
 
-function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
+function openEntrySheet({ tx = null, rule = null, newRule = false, once = false } = {}) {
   const mode = tx ? 'tx-edit' : rule ? 'rule-edit' : newRule ? 'rule-new' : 'tx-new';
   const isRule = mode.startsWith('rule');
   const today = L.todayISO();
@@ -616,7 +694,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
       ? { type: tx.type, category: tx.category, amount: tx.amount, note: tx.note, date: tx.date, repeat: 'none' }
       : mode === 'rule-edit'
         ? { type: rule.type, category: rule.category, amount: rule.amount, note: rule.note, date: rule.nextDate, repeat: rule.interval }
-        : { type: 'expense', category: newRule ? 'wohnen' : 'lebensmittel', amount: null, note: '', date: today, repeat: newRule ? 'monthly' : 'none' };
+        : { type: 'expense', category: newRule && !once ? 'wohnen' : 'lebensmittel', amount: null, note: '', date: once ? addDays(today, 7) : today, repeat: once ? 'once' : newRule ? 'monthly' : 'none' };
   let catTouched = false;
 
   const catGrid = () =>
@@ -626,7 +704,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
           ${catIcon(c, 20)}<span class="lbl">${esc(c.label)}</span></button>`,
       )
       .join('');
-  const repeatOptions = [...(isRule ? [] : [{ id: 'none', label: 'Nie (einmalig)' }]), ...INTERVALS]
+  const repeatOptions = [...(isRule ? [] : [{ id: 'none', label: 'Nie (einmalig)' }]), ...INTERVALS.filter((o) => isRule || o.id !== 'once')]
     .map((o) => `<option value="${o.id}" ${o.id === draft.repeat ? 'selected' : ''}>${esc(o.label)}</option>`)
     .join('');
   const ruleOfTx = tx?.rid ? state.data.recurring.find((r) => r.id === tx.rid) : null;
@@ -662,6 +740,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
     <div class="field">
       <label for="f-date">${isRule ? 'Nächste Ausführung' : 'Datum'}</label>
       <input id="f-date" class="input" type="date" value="${esc(draft.date)}" required>
+      ${mode === 'tx-new' ? `<div class="field-hint" id="f-date-hint">${esc(dateHint(draft.date))}</div>` : ''}
     </div>
     ${mode === 'tx-edit' ? '' : `<div class="field">
       <label for="f-repeat">Wiederholen</label>
@@ -670,9 +749,14 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
     </div>`}
     <button type="button" class="btn primary block" id="f-save">${icon('check', 20)}${mode === 'tx-edit' || mode === 'rule-edit' ? 'Änderungen speichern' : isRule ? 'Dauerauftrag speichern' : 'Buchung speichern'}</button>
     ${mode === 'tx-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}Buchung löschen</button>` : ''}
-    ${mode === 'rule-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}Dauerauftrag löschen</button>` : ''}`;
+    ${mode === 'rule-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}${rule.interval === 'once' ? 'Geplante Buchung löschen' : 'Dauerauftrag löschen'}</button>` : ''}`;
 
-  const titles = { 'tx-new': 'Neue Buchung', 'tx-edit': 'Buchung bearbeiten', 'rule-new': 'Neuer Dauerauftrag', 'rule-edit': 'Dauerauftrag bearbeiten' };
+  const titles = {
+    'tx-new': 'Neue Buchung',
+    'tx-edit': 'Buchung bearbeiten',
+    'rule-new': 'Neuer Dauerauftrag',
+    'rule-edit': rule?.interval === 'once' ? 'Geplante Buchung' : 'Dauerauftrag bearbeiten',
+  };
 
   openSheet({
     title: titles[mode],
@@ -737,6 +821,8 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
       const updateHint = () => {
         const h = $('#f-repeat-hint', sheet);
         if (h) h.textContent = repeatHint(repeatSel.value, dateInput.value);
+        const dh = $('#f-date-hint', sheet);
+        if (dh) dh.textContent = repeatSel?.value === 'none' ? dateHint(dateInput.value) : '';
       };
       repeatSel?.addEventListener('change', updateHint);
       dateInput.addEventListener('change', updateHint);
@@ -781,7 +867,9 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
           return commit(msg);
         }
 
-        if (mode === 'tx-new' && repeat === 'none') {
+        // Einmalige Buchung in der Zukunft -> als geplante Buchung speichern
+        const scheduleOnce = mode === 'tx-new' && repeat === 'none' && date > L.todayISO();
+        if (mode === 'tx-new' && repeat === 'none' && !scheduleOnce) {
           const newTx = { id: L.uid(), type: draft.type, amount: cents, category, note, date, createdAt: Date.now(), src: 'manual' };
           if (mk) newTx.mkey = mk;
           if (catTouched && mk) learnCategory(draft.type, mk, category, newTx.id);
@@ -799,7 +887,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
           category,
           note: note || L.getCategory(draft.type, category).label,
           mkey: mk,
-          interval: isRule ? repeat : repeat,
+          interval: scheduleOnce ? 'once' : repeat,
           day: Number(date.slice(8, 10)),
           nextDate: date,
           active: true,
@@ -808,6 +896,9 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
         if (catTouched && mk) learnCategory(draft.type, mk, category, null);
         const n = runRecurring();
         close();
+        if (target.interval === 'once') {
+          return commit(n ? 'Geplante Buchung gebucht' : `Geplant: wird am ${L.shortDate(date)} gebucht`);
+        }
         commit(
           mode === 'rule-edit'
             ? `Dauerauftrag gespeichert${n ? ` · ${n} gebucht` : ''}`
@@ -821,14 +912,14 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
         if (mode === 'rule-edit') {
           const ok = await confirmDialog({
             title: 'Dauerauftrag löschen?',
-            message: `„${rule.note}“ wird künftig nicht mehr automatisch gebucht. Bereits erstellte Buchungen bleiben erhalten.`,
+            message: rule.interval === 'once' ? `„${rule.note}“ am ${L.shortDate(rule.nextDate)} wird nicht gebucht.` : `„${rule.note}“ wird künftig nicht mehr automatisch gebucht. Bereits erstellte Buchungen bleiben erhalten.`,
             confirmLabel: 'Löschen',
             danger: true,
           });
           if (!ok) return;
           state.data.recurring = state.data.recurring.filter((r) => r.id !== rule.id);
           close();
-          return commit('Dauerauftrag gelöscht');
+          return commit(rule.interval === 'once' ? 'Geplante Buchung gelöscht' : 'Dauerauftrag gelöscht');
         }
         const ok = await confirmDialog({
           title: 'Buchung löschen?',
@@ -848,7 +939,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false } = {}) {
 /* ---------- Daueraufträge & Abos ---------- */
 
 function monthlyEquivalent(r) {
-  const f = { weekly: 52 / 12, monthly: 1, quarterly: 1 / 3, yearly: 1 / 12 }[r.interval] || 1;
+  const f = { once: 0, weekly: 52 / 12, monthly: 1, quarterly: 1 / 3, yearly: 1 / 12 }[r.interval] ?? 1;
   return Math.round(r.amount * f);
 }
 
@@ -860,17 +951,18 @@ function openRecurringList() {
     .map((r) => {
       const cat = L.getCategory(r.type, r.category);
       return `<button type="button" class="settings-row" data-rule="${esc(r.id)}">${catIcon(cat, 18)}
-        <span class="main">${esc(r.note || cat.label)}<span class="sub">${esc(describeRule(r))} · nächste ${esc(L.shortDate(r.nextDate))}</span></span>
+        <span class="main">${esc(r.note || cat.label)}<span class="sub">${esc(describeRule(r))}${r.interval === 'once' ? '' : ` · nächste ${esc(L.shortDate(r.nextDate))}`}</span></span>
         <span class="amount ${r.type === 'income' ? 'in' : 'out'}">${money(r.type === 'income' ? r.amount : -r.amount, { signed: true })}</span></button>`;
     })
     .join('');
   openSheet({
-    title: 'Daueraufträge & Abos',
+    title: 'Geplant & Daueraufträge',
     body: `
-      <p class="muted" style="margin:0">Flowly bucht diese Einträge automatisch zum Termin – du musst nichts tun.</p>
+      <p class="muted" style="margin:0">Flowly bucht diese Einträge automatisch an ihrem Datum – du musst nichts tun.</p>
       ${rules.length ? `<div class="fix-sum"><div><span class="eyebrow">Fixkosten / Monat</span><strong>${money(fixOut)}</strong></div><div><span class="eyebrow">Feste Einnahmen / Monat</span><strong>${money(fixIn)}</strong></div></div>
         <div class="settings-group">${rows}</div>` : emptyState({ title: 'Noch keine Daueraufträge', art: 'repeat', text: 'Lege Miete, Gehalt oder Abos einmal an. Nach einem Kontoauszug-Import schlägt Flowly wiederkehrende Zahlungen auch selbst vor.', small: true })}
-      <button type="button" class="btn primary block" id="r-new">${icon('plus', 20)}Neuer Dauerauftrag</button>`,
+      <button type="button" class="btn primary block" id="r-new">${icon('plus', 20)}Neuer Dauerauftrag</button>
+      <button type="button" class="btn block" id="r-once">${icon('calendar', 20)}Einmalig an einem Datum planen</button>`,
     onMount(sheet, close) {
       sheet.addEventListener('click', (e) => {
         const row = e.target.closest('[data-rule]');
@@ -883,6 +975,10 @@ function openRecurringList() {
       $('#r-new', sheet).addEventListener('click', () => {
         close();
         setTimeout(() => openEntrySheet({ newRule: true }), 120);
+      });
+      $('#r-once', sheet).addEventListener('click', () => {
+        close();
+        setTimeout(() => openEntrySheet({ newRule: true, once: true }), 120);
       });
     },
   });
@@ -949,9 +1045,10 @@ function importCard() {
       <span class="badge in">${icon('download', 18)}</span>
       <div class="main"><div class="title">Zahlungen importieren</div>
         <div class="sub${st.stale ? ' warn' : ''}">${st.stale ? icon('alert', 13, 'inline') + ' ' : ''}${esc(st.text)}</div></div>
+      <button type="button" class="icon-btn plain card-close" data-action="hide-import" aria-label="Import-Hinweis ausblenden">${icon('x', 20)}</button>
     </div>
     <button type="button" class="btn primary block" data-action="import">${icon('download', 20)}Neue Zahlungen importieren</button>
-    <div class="import-links"><span>Apple-Pay-Datei oder Kontoauszug (CSV)</span><button type="button" class="link" data-action="open-automation">${st.never ? 'Automatik einrichten' : 'Anleitung'}</button></div>
+    <div class="import-links"><button type="button" class="link muted-link" data-action="hide-import">Ich trage meine Zahlen selbst ein</button><button type="button" class="link" data-action="open-automation">${st.never ? 'Automatik einrichten' : 'Anleitung'}</button></div>
   </section>`;
 }
 
@@ -1325,6 +1422,7 @@ function openSettingsSheet() {
       <div class="field"><label for="s-name">Dein Name</label><input id="s-name" class="input" type="text" maxlength="40" placeholder="z. B. Alex" autocomplete="given-name" value="${esc(s.name)}"></div>
       <div class="field"><label for="s-start">Startguthaben</label><div class="amount-field small"><input id="s-start" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="17" value="${s.startBalance ? esc(L.formatAmountInput(s.startBalance)) : ''}"><span class="cur">€</span></div>
         <div class="muted" style="font-size:13px;margin-top:6px">Dein Kontostand vor der ersten Buchung. Negative Werte mit „-“.</div></div>
+      <button type="button" class="settings-group settings-row" id="s-limit" style="margin-top:16px"><span class="ri">${icon('wallet', 18)}</span><span class="main">Ausgaben-Limit pro Monat<span class="sub">${state.data.settings.monthlyLimit ? money(state.data.settings.monthlyLimit) : 'Nicht festgelegt'}</span></span>${icon('chevronRight', 18)}</button>
       <div class="form-error" id="s-error"></div>
       <button type="button" class="btn primary block" id="s-save">${icon('check', 20)}Speichern</button>
 
@@ -1332,7 +1430,8 @@ function openSettingsSheet() {
       <div class="settings-group">
         <button type="button" class="settings-row" id="s-auto"><span class="ri">${icon('sparkle', 18)}</span><span class="main">Automatik einrichten<span class="sub">Apple-Pay-Zahlungen per Kurzbefehl erfassen</span></span>${icon('chevronRight', 18)}</button>
         <button type="button" class="settings-row" id="s-csv"><span class="ri">${icon('download', 18)}</span><span class="main">Zahlungen importieren<span class="sub">Apple-Pay-Datei oder Kontoauszug (CSV)</span></span>${icon('chevronRight', 18)}</button>
-        <button type="button" class="settings-row" id="s-rec"><span class="ri">${icon('repeat', 18)}</span><span class="main">Daueraufträge & Abos<span class="sub">${state.data.recurring.length} angelegt</span></span>${icon('chevronRight', 18)}</button>
+        <button type="button" class="settings-row" id="s-rec"><span class="ri">${icon('repeat', 18)}</span><span class="main">Geplant & Daueraufträge<span class="sub">${state.data.recurring.length} angelegt</span></span>${icon('chevronRight', 18)}</button>
+        <button type="button" class="settings-row" id="s-importcard" role="switch" aria-checked="${!state.data.settings.hideImport}"><span class="ri">${icon('overview', 18)}</span><span class="main">Import-Karte in der Übersicht<span class="sub">Aus = du trägst deine Zahlen selbst ein</span></span><span class="switch"></span></button>
         <button type="button" class="settings-row" id="s-learned"><span class="ri">${icon('pencil', 18)}</span><span class="main">Gelernte Kategorien<span class="sub">${Object.keys(state.data.learned).length} Händler gemerkt</span></span>${icon('chevronRight', 18)}</button>
       </div>
 
@@ -1360,7 +1459,7 @@ function openSettingsSheet() {
           <li>Importierte Dateien werden nur gelesen, nie verschickt.</li>
         </ul>
       </div>
-      <p class="settings-note">Flowly · Version 1.2</p>`,
+      <p class="settings-note">Flowly · Version 1.3</p>`,
     onMount(sheet, close) {
       const startInput = $('#s-start', sheet);
       amountInputHandler(startInput);
@@ -1389,6 +1488,14 @@ function openSettingsSheet() {
         setTimeout(openRecurringList, 120);
       });
       $('#s-learned', sheet).addEventListener('click', openLearnedList);
+      $('#s-limit', sheet).addEventListener('click', openLimitSheet);
+      $('#s-importcard', sheet).addEventListener('click', (e) => {
+        const b = e.currentTarget;
+        state.data.settings.hideImport = !state.data.settings.hideImport;
+        b.setAttribute('aria-checked', String(!state.data.settings.hideImport));
+        saveState(state.data);
+        render();
+      });
       $('#s-lock', sheet).addEventListener('click', () =>
         openLockSettings(() => {
           const el = $('#s-lock-state', sheet);
@@ -1506,6 +1613,23 @@ document.addEventListener('click', (e) => {
       break;
     case 'open-recurring':
       openRecurringList();
+      break;
+    case 'hide-import':
+      state.data.settings.hideImport = true;
+      commit('Ausgeblendet – Import findest du weiter in den Einstellungen');
+      break;
+    case 'show-import':
+      state.data.settings.hideImport = false;
+      commit('Import-Karte wieder eingeblendet');
+      break;
+    case 'manual-mode':
+      state.data.settings.hideImport = true;
+      saveState(state.data);
+      render();
+      openEntrySheet();
+      break;
+    case 'edit-limit':
+      openLimitSheet();
       break;
     case 'month-prev':
       state.month = L.addMonths(state.month, -1);

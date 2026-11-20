@@ -25,7 +25,7 @@ export const INCOME_CATEGORIES = [
 
 export const MAX_CENTS = 99_999_999_999; // 999.999.999,99 €
 export const SOURCES = ['manual', 'applepay', 'bank', 'recurring'];
-export const INTERVAL_IDS = ['weekly', 'monthly', 'quarterly', 'yearly'];
+export const INTERVAL_IDS = ['once', 'weekly', 'monthly', 'quarterly', 'yearly'];
 const MAX_SEEN = 20000;
 
 const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
@@ -362,6 +362,16 @@ export function filterTransactions(txs, { type = 'all', query = '' } = {}) {
   });
 }
 
+/**
+ * Monatliches Ausgaben-Limit: wie viel ist noch übrig (positiv) bzw. zu viel ausgegeben (negativ)?
+ * null, wenn kein Limit gesetzt ist.
+ */
+export function limitStatus(expense, limit) {
+  if (!limit || limit <= 0) return null;
+  const remaining = limit - expense;
+  return { limit, spent: expense, remaining, over: remaining < 0, ratio: expense / limit };
+}
+
 export function goalProgress(goal) {
   if (!goal.target || goal.target <= 0) return 0;
   return Math.max(0, Math.min(1, goal.saved / goal.target));
@@ -376,7 +386,7 @@ export function uid() {
 export function createEmptyState() {
   return {
     version: 2,
-    settings: { name: '', startBalance: 0 },
+    settings: { name: '', startBalance: 0, monthlyLimit: 0, hideImport: false },
     transactions: [],
     budgets: {},
     goals: [],
@@ -413,6 +423,8 @@ export function sanitizeData(raw) {
   const s = raw.settings || {};
   out.settings.name = cleanText(s.name, 40);
   out.settings.startBalance = isCents(s.startBalance) ? s.startBalance : 0;
+  out.settings.monthlyLimit = isCents(s.monthlyLimit) && s.monthlyLimit > 0 ? s.monthlyLimit : 0;
+  out.settings.hideImport = s.hideImport === true;
 
   const seen = new Set();
   for (const t of raw.transactions) {
@@ -522,7 +534,7 @@ export function generateSampleData(today = todayISO(), name = '') {
   const between = (min, max) => Math.round((min + rnd() * (max - min)) * 100);
   const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
   const state = createEmptyState();
-  state.settings = { name, startBalance: 420000 };
+  state.settings = { name, startBalance: 420000, monthlyLimit: 180000, hideImport: false };
   let counter = 0;
   const currentKey = monthKeyOf(today);
   // Daueraufträge & Abos der Beispieldaten

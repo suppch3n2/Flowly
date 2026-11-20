@@ -782,3 +782,36 @@ select.input { background-image: linear-gradient(45deg, transparent 50%, var(--m
 .formula .var { padding: 3px 8px; border-radius: 7px; background: rgba(91, 192, 235, 0.16); color: var(--income); font-weight: 600; font-size: 13px; }
 .copy { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; margin: 4px 0; padding: 4px 6px 4px 10px; border-radius: 10px; background: var(--card); border: 1px solid var(--border); font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 14px; color: var(--text); -webkit-user-select: text; user-select: text; }
 .copy span { font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--accent); padding: 3px 8px; border-radius: 7px; background: rgba(139, 124, 246, 0.14); }
+
+/* ---------- Import-Karte schließen, Selbst-eintragen-Modus ---------- */
+.import-card .import-top .main { flex: 1; }
+.card-close { margin: -8px -10px -8px 0; color: var(--faint); }
+.import-links .muted-link { color: var(--muted); font-weight: 500; text-align: left; }
+.center-link { display: block; margin: 2px auto 0; min-height: 44px; color: var(--accent); font-weight: 600; font-size: 14px; }
+
+/* ---------- Ausgaben-Limit ---------- */
+.limit-card { display: block; width: 100%; text-align: left; color: var(--text); transition: transform 0.15s var(--ease), border-color 0.2s; }
+.limit-card:active { transform: scale(0.985); }
+.limit-card.pos { border-color: rgba(110, 231, 183, 0.3); background: radial-gradient(110% 90% at 100% 0%, rgba(110, 231, 183, 0.1), transparent 60%), var(--card); }
+.limit-card.neg { border-color: rgba(248, 113, 113, 0.4); background: radial-gradient(110% 90% at 100% 0%, rgba(248, 113, 113, 0.12), transparent 60%), var(--card); }
+.limit-head { display: flex; justify-content: space-between; align-items: center; color: var(--faint); }
+.limit-value { margin-top: 4px; font-size: 34px; }
+.limit-card.pos .limit-value { color: var(--positive); }
+.limit-card.neg .limit-value { color: var(--danger); }
+.limit-diff { font-size: 14px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.limit-card.pos .limit-diff { color: var(--positive); }
+.limit-card.neg .limit-diff { color: var(--danger); }
+.limit-foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.limit-card.unset { display: flex; align-items: center; gap: 12px; border-style: dashed; background: transparent; }
+.limit-card.unset .badge { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; flex: none; }
+.limit-card.unset .main { flex: 1; min-width: 0; }
+.limit-card.unset .title, .limit-card.unset .sub { display: block; }
+.limit-card.unset .title { font-weight: 600; }
+.limit-card.unset .sub { color: var(--muted); font-size: 13px; }
+.limit-card.unset > .ico:last-child { color: var(--faint); }
+
+/* ---------- Schalter ---------- */
+.switch { position: relative; width: 51px; height: 31px; flex: none; border-radius: 999px; background: #2A3142; transition: background 0.25s; }
+.switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35); transition: transform 0.25s var(--ease); }
+[aria-checked="true"] > .switch { background: var(--positive); }
+[aria-checked="true"] > .switch::after { transform: translateX(20px); }
