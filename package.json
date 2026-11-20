@@ -1,0 +1,9 @@
+{
+  "name": "flowly",
+  "private": true,
+  "type": "module",
+  "description": "Flowly – Finanz-PWA (kein Build-Schritt nötig; package.json nur für Tests)",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}
