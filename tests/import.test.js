@@ -444,3 +444,18 @@ test('Ausgaben-Limit, das sich jeden Monat erhöht oder verringert', () => {
   assert.deepEqual([clean.settings.limitStep, clean.settings.limitStart], [-2500, '2026-11']);
   assert.equal(L.sanitizeData({ transactions: [], settings: { limitStart: '2026-13' } }).settings.limitStart, '');
 });
+
+test('Dauerauftrag nachträglich ändern: vergangene Einträge auf Wunsch mit anpassen', () => {
+  const data = L.createEmptyState();
+  data.recurring.push({ id: 'g1', type: 'income', amount: 200000, category: 'gehalt', note: 'Gehalt', interval: 'monthly', day: 28, nextDate: '2026-09-28', active: true });
+  R.applyRecurring(data, '2026-11-20', L.uid);
+  assert.equal(data.transactions.length, 2);
+  const n = R.updateRuleBookings(data, 'g1', { type: 'income', amount: 210000, category: 'gehalt', note: 'Gehalt neu' });
+  assert.equal(n, 2);
+  assert.ok(data.transactions.every((t) => t.amount === 210000 && t.note === 'Gehalt neu'));
+  assert.equal(L.monthSummary(data.transactions, '2026-10').income, 210000);
+  // Andere Einträge bleiben unberührt
+  data.transactions.push({ id: 'x', type: 'income', amount: 5000, category: 'geschenk', note: 'Oma', date: '2026-10-02', createdAt: 0 });
+  R.updateRuleBookings(data, 'g1', { type: 'income', amount: 1, category: 'gehalt', note: 'x' });
+  assert.equal(data.transactions.find((t) => t.id === 'x').amount, 5000);
+});

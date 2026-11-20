@@ -6,7 +6,7 @@ import { areaChart, attachAreaScrub, barChart, donutChart } from './charts.js';
 import * as Lock from './lock.js';
 import { merchantKey, suggestCategory, learnedKey } from './categorize.js';
 import { decodeBytes, parseImportText, buildCandidates, candidateToTransaction } from './importer.js';
-import { INTERVALS, applyRecurring, detectRecurring, describeRule } from './recurring.js';
+import { INTERVALS, applyRecurring, detectRecurring, describeRule, updateRuleBookings } from './recurring.js';
 
 const esc = L.escapeHtml;
 const money = L.formatMoney;
@@ -530,6 +530,7 @@ function renderGoals() {
           <div class="bar pos"><span style="width:${(p * 100).toFixed(1)}%"></span></div>
           <div class="actions">
             <button type="button" class="btn small" data-action="goal-add" data-id="${esc(g.id)}">${icon('plus', 18)}Geld hinzufügen</button>
+            <button type="button" class="icon-btn" data-action="goal-edit" data-id="${esc(g.id)}" aria-label="Sparziel ${esc(g.name)} bearbeiten">${icon('pencil', 20)}</button>
             <button type="button" class="icon-btn" data-action="goal-delete" data-id="${esc(g.id)}" aria-label="Sparziel ${esc(g.name)} löschen">${icon('trash', 20)}</button>
           </div>
         </section>`;
@@ -688,7 +689,7 @@ function openSheet({ title, body, onMount }) {
   return close;
 }
 
-function confirmDialog({ title, message, confirmLabel = 'Bestätigen', danger = false, iconName }) {
+function confirmDialog({ title, message, confirmLabel = 'Bestätigen', cancelLabel = 'Abbrechen', danger = false, iconName }) {
   return new Promise((resolve) => {
     const wrap = document.createElement('div');
     wrap.className = 'dialog-wrap';
@@ -698,7 +699,7 @@ function confirmDialog({ title, message, confirmLabel = 'Bestätigen', danger = 
         <h2 id="dlg-title">${esc(title)}</h2>
         <p>${esc(message)}</p>
         <div class="d-actions">
-          <button type="button" class="btn" data-res="0">Abbrechen</button>
+          <button type="button" class="btn" data-res="0">${esc(cancelLabel)}</button>
           <button type="button" class="btn ${danger ? 'danger solid' : 'primary'}" data-res="1">${esc(confirmLabel)}</button>
         </div>
       </div>`;
@@ -852,6 +853,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
       ${mode === 'tx-edit' ? '' : `<div class="field-hint" id="f-repeat-hint">${esc(repeatHint(draft.repeat, draft.date))}</div>`}
     </div>
     <button type="button" class="btn primary block" id="f-save">${icon('check', 20)}${mode === 'tx-edit' || mode === 'rule-edit' ? 'Änderungen speichern' : isRule ? 'Dauerauftrag speichern' : 'Buchung speichern'}</button>
+    ${mode === 'tx-edit' && ruleOfTx ? `<button type="button" class="btn block" id="f-rule">${icon('repeat', 20)}Dauerauftrag bearbeiten</button>` : ''}
     ${mode === 'tx-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}Buchung löschen</button>` : ''}
     ${mode === 'rule-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}${rule.interval === 'once' ? 'Geplante Buchung löschen' : 'Dauerauftrag löschen'}</button>` : ''}`;
 
@@ -940,7 +942,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
       repeatSel?.addEventListener('change', updateHint);
       dateInput.addEventListener('change', updateHint);
 
-      $('#f-save', sheet).addEventListener('click', () => {
+      $('#f-save', sheet).addEventListener('click', async () => {
         const cents = L.parseAmount(amount.value);
         if (cents == null) {
           field.classList.remove('invalid');
@@ -1000,6 +1002,23 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
         // Dauerauftrag anlegen oder ändern
         const target = mode === 'rule-edit' ? state.data.recurring.find((r) => r.id === rule.id) : { id: L.uid(), createdAt: Date.now() };
         if (!target) return close();
+        // Auch schon gebuchte Einträge ändern?
+        let pastUpdated = 0;
+        if (mode === 'rule-edit') {
+          const newNote = note || L.getCategory(draft.type, category).label;
+          const changed = target.amount !== cents || target.category !== category || target.note !== newNote || target.type !== draft.type;
+          const past = state.data.transactions.filter((t) => t.rid === target.id).length;
+          if (changed && past) {
+            const all = await confirmDialog({
+              title: 'Auch vergangene Einträge ändern?',
+              message: `Von „${target.note}“ gibt es schon ${past} ${past === 1 ? 'gebuchten Eintrag' : 'gebuchte Einträge'}. Sollen die auch geändert werden?`,
+              confirmLabel: 'Alle ändern',
+              cancelLabel: 'Nur künftige',
+              iconName: 'repeat',
+            });
+            if (all) pastUpdated = updateRuleBookings(state.data, target.id, { type: draft.type, amount: cents, category, note: newNote });
+          }
+        }
         Object.assign(target, {
           type: draft.type,
           amount: cents,
@@ -1020,11 +1039,16 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
         }
         commit(
           mode === 'rule-edit'
-            ? `Dauerauftrag gespeichert${n ? ` · ${n} gebucht` : ''}`
+            ? `Dauerauftrag gespeichert${pastUpdated ? ` · ${pastUpdated} vergangene angepasst` : ''}${n ? ` · ${n} gebucht` : ''}`
             : n
               ? `Dauerauftrag angelegt · ${n} ${n === 1 ? 'Buchung' : 'Buchungen'} erstellt`
               : `Dauerauftrag angelegt – erste Buchung am ${L.shortDate(target.nextDate)}`,
         );
+      });
+
+      $('#f-rule', sheet)?.addEventListener('click', () => {
+        close();
+        setTimeout(() => openEntrySheet({ rule: ruleOfTx }), 150);
       });
 
       $('#f-delete', sheet)?.addEventListener('click', async () => {
@@ -1466,15 +1490,16 @@ function openBudgetSheet(catId) {
 
 /* ---------- Sparziele ---------- */
 
-function openGoalSheet() {
+function openGoalSheet(goal = null) {
+  const val = (c) => (c ? esc(L.formatAmountInput(c)) : '');
   openSheet({
-    title: 'Neues Sparziel',
+    title: goal ? 'Sparziel bearbeiten' : 'Neues Sparziel',
     body: `
-      <div class="field"><label for="g-name">Name</label><input id="g-name" class="input" type="text" maxlength="40" placeholder="z. B. Urlaub, Notgroschen" autocomplete="off"></div>
-      <div class="field"><label for="g-target">Zielbetrag</label><div class="amount-field small"><input id="g-target" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="16"><span class="cur">€</span></div></div>
-      <div class="field"><label for="g-saved">Schon gespart (optional)</label><div class="amount-field small"><input id="g-saved" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="16"><span class="cur">€</span></div></div>
+      <div class="field"><label for="g-name">Name</label><input id="g-name" class="input" type="text" maxlength="40" placeholder="z. B. Urlaub, Notgroschen" autocomplete="off" value="${goal ? esc(goal.name) : ''}"></div>
+      <div class="field"><label for="g-target">Zielbetrag</label><div class="amount-field small"><input id="g-target" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="16" value="${goal ? val(goal.target) : ''}"><span class="cur">€</span></div></div>
+      <div class="field"><label for="g-saved">${goal ? 'Bisher gespart' : 'Schon gespart (optional)'}</label><div class="amount-field small"><input id="g-saved" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="16" value="${goal ? val(goal.saved) : ''}"><span class="cur">€</span></div></div>
       <div class="form-error" id="g-error"></div>
-      <button type="button" class="btn primary block" id="g-save">${icon('check', 20)}Sparziel anlegen</button>`,
+      <button type="button" class="btn primary block" id="g-save">${icon('check', 20)}${goal ? 'Änderungen speichern' : 'Sparziel anlegen'}</button>`,
     onMount(sheet, close) {
       const err = $('#g-error', sheet);
       ['#g-target', '#g-saved'].forEach((s) => amountInputHandler($(s, sheet)));
@@ -1485,10 +1510,15 @@ function openGoalSheet() {
         const saved = savedRaw ? L.parseAmount(savedRaw, { allowZero: true }) : 0;
         if (!name) return (err.textContent = 'Bitte gib deinem Ziel einen Namen.');
         if (target == null) return (err.textContent = 'Bitte einen gültigen Zielbetrag eingeben.');
-        if (saved == null) return (err.textContent = 'Der bereits gesparte Betrag ist ungültig.');
-        state.data.goals.push({ id: L.uid(), name, target, saved, createdAt: Date.now() });
+        if (saved == null) return (err.textContent = 'Der gesparte Betrag ist ungültig.');
+        if (goal) {
+          const g = state.data.goals.find((x) => x.id === goal.id);
+          if (g) Object.assign(g, { name, target, saved });
+        } else {
+          state.data.goals.push({ id: L.uid(), name, target, saved, createdAt: Date.now() });
+        }
         close();
-        commit('Sparziel angelegt');
+        commit(goal ? 'Sparziel gespeichert' : 'Sparziel angelegt');
       });
     },
   });
@@ -1788,6 +1818,11 @@ document.addEventListener('click', (e) => {
     case 'goal-add': {
       const g = state.data.goals.find((x) => x.id === el.dataset.id);
       if (g) openGoalAddSheet(g);
+      break;
+    }
+    case 'goal-edit': {
+      const g = state.data.goals.find((x) => x.id === el.dataset.id);
+      if (g) openGoalSheet(g);
       break;
     }
     case 'goal-delete': {

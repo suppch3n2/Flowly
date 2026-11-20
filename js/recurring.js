@@ -166,3 +166,14 @@ export function detectRecurring(data, today) {
   }
   return out.sort((a, b) => b.amount - a.amount);
 }
+
+/** Überträgt geänderte Angaben eines Dauerauftrags auf alle schon gebuchten Einträge. */
+export function updateRuleBookings(data, ruleId, { type, amount, category, note }) {
+  let n = 0;
+  for (const t of data.transactions) {
+    if (t.rid !== ruleId) continue;
+    Object.assign(t, { type, amount, category, note, merchant: note });
+    n++;
+  }
+  return n;
+}
