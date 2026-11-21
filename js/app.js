@@ -2149,6 +2149,112 @@ else {
   showLockScreen();
 }
 
+/* ---------- Ziehen zum Aktualisieren ---------- */
+let swReg = null;
+const PTR_TRIGGER = 64;
+const PTR_MAX = 100;
+const ptrEl = $('#ptr');
+const viewsEl = $('.views');
+let ptrStart = null;
+let ptrPull = 0;
+let ptrBusy = false;
+
+function ptrPaint(pull) {
+  const k = Math.min(1, pull / PTR_TRIGGER);
+  ptrEl.style.opacity = String(k);
+  ptrEl.style.transform = `translateY(${pull * 0.55 - 26}px) scale(${0.55 + 0.45 * k}) rotate(${pull * 3.6}deg)`;
+  viewsEl.style.transform = pull ? `translateY(${pull}px)` : '';
+}
+
+function ptrBlocked(target) {
+  return (
+    ptrBusy ||
+    window.scrollY > 0 ||
+    document.body.classList.contains('is-locked') ||
+    document.querySelector('.sheet-wrap, .dialog-wrap') ||
+    target.closest('.area-plot, .pills, .tabbar, input, select, textarea')
+  );
+}
+
+document.addEventListener(
+  'touchstart',
+  (e) => {
+    if (e.touches.length !== 1 || ptrBlocked(e.target)) return;
+    ptrStart = e.touches[0].clientY;
+    ptrPull = 0;
+  },
+  { passive: true },
+);
+document.addEventListener(
+  'touchmove',
+  (e) => {
+    if (ptrStart == null) return;
+    const dy = e.touches[0].clientY - ptrStart;
+    if (dy <= 0 || window.scrollY > 0) {
+      if (ptrPull) {
+        ptrPull = 0;
+        ptrPaint(0);
+      }
+      if (window.scrollY > 0) ptrStart = null;
+      return;
+    }
+    e.preventDefault();
+    const prev = ptrPull;
+    ptrPull = Math.min(PTR_MAX, dy * 0.5);
+    if (prev < PTR_TRIGGER && ptrPull >= PTR_TRIGGER) navigator.vibrate?.(8);
+    viewsEl.classList.add('pulling');
+    ptrEl.classList.add('pulling');
+    ptrPaint(ptrPull);
+  },
+  { passive: false },
+);
+const ptrEnd = (cancelled) => {
+  if (ptrStart == null) return;
+  ptrStart = null;
+  viewsEl.classList.remove('pulling');
+  ptrEl.classList.remove('pulling');
+  if (!cancelled && ptrPull >= PTR_TRIGGER) refreshApp();
+  else {
+    ptrPull = 0;
+    ptrPaint(0);
+  }
+};
+document.addEventListener('touchend', () => ptrEnd(false));
+document.addEventListener('touchcancel', () => ptrEnd(true));
+
+/** Sucht nach einer neuen Version (lädt sie dann automatisch) und aktualisiert die Anzeige. */
+async function refreshApp() {
+  ptrBusy = true;
+  ptrEl.classList.add('spin');
+  ptrEl.style.opacity = '1';
+  ptrEl.style.transform = 'translateY(14px) scale(1)';
+  viewsEl.style.transform = 'translateY(58px)';
+  $('#ptr-status').textContent = 'Wird aktualisiert';
+  const minWait = new Promise((r) => setTimeout(r, 1000));
+  let updating = false;
+  try {
+    if (swReg) {
+      await swReg.update();
+      updating = !!(swReg.installing || swReg.waiting);
+    }
+  } catch {
+    /* offline – einfach neu anzeigen */
+  }
+  await minWait;
+  if (updating) {
+    // Neue Version wird installiert; der Service Worker übernimmt gleich und die Seite lädt neu
+    setTimeout(() => location.reload(), 6000);
+    return;
+  }
+  processDue();
+  render();
+  ptrEl.classList.remove('spin');
+  ptrPull = 0;
+  ptrPaint(0);
+  $('#ptr-status').textContent = 'Aktualisiert';
+  ptrBusy = false;
+}
+
 /* ---------- Service Worker & Updates ---------- */
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const hadController = !!navigator.serviceWorker.controller;
@@ -2168,6 +2274,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker
       .register('./sw.js', { scope: './', updateViaCache: 'none' })
       .then((reg) => {
+        swReg = reg;
         const check = () => reg.update().catch(() => {});
         check();
         document.addEventListener('visibilitychange', () => {

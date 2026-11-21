@@ -955,3 +955,17 @@ select.input { background-image: linear-gradient(45deg, transparent 50%, var(--m
   padding-left: 8px; margin-left: -6px;
 }
 .views { overflow-x: clip; }
+
+/* ---------- Ziehen zum Aktualisieren ---------- */
+.ptr {
+  position: fixed; left: 50%; top: calc(var(--sat) + 68px); z-index: 15;
+  width: 34px; height: 34px; margin-left: -17px; display: grid; place-items: center;
+  color: var(--muted); opacity: 0; pointer-events: none;
+  transform: translateY(-26px) scale(0.55);
+  transition: opacity 0.3s ease, transform 0.35s var(--ease);
+}
+.ptr.pulling { transition: none; }
+.ptr.spin svg { animation: ptrSpin 0.9s steps(8) infinite; }
+@keyframes ptrSpin { to { transform: rotate(360deg); } }
+.views { transition: transform 0.35s var(--ease); }
+.views.pulling { transition: none; }
