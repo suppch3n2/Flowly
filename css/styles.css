@@ -969,3 +969,13 @@ select.input { background-image: linear-gradient(45deg, transparent 50%, var(--m
 @keyframes ptrSpin { to { transform: rotate(360deg); } }
 .views { transition: transform 0.35s var(--ease); }
 .views.pulling { transition: none; }
+
+/* Ziehen zum Aktualisieren – ruhiger, größer */
+.ptr {
+  width: 44px; height: 44px; margin-left: -22px; top: calc(var(--sat) + 70px);
+  color: #9AA2B5; transform: translateY(-30px);
+  transition: opacity 0.18s ease, transform 0.4s var(--ease);
+}
+.ptr line { transition: opacity 0.12s ease; }
+.ptr.spin svg { animation: ptrSpin 0.85s steps(8) infinite; }
+.views { transition: transform 0.4s var(--ease); }

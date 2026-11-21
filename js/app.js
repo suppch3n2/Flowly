@@ -2151,19 +2151,34 @@ else {
 
 /* ---------- Ziehen zum Aktualisieren ---------- */
 let swReg = null;
-const PTR_TRIGGER = 64;
-const PTR_MAX = 100;
+const PTR_TRIGGER = 72; // entspricht rund 190 px Fingerweg
+const PTR_MAX = 140;
+const PTR_HOLD = 64; // Abstand, während das Symbol dreht
 const ptrEl = $('#ptr');
 const viewsEl = $('.views');
 let ptrStart = null;
 let ptrPull = 0;
 let ptrBusy = false;
 
+const ptrLines = [...ptrEl.querySelectorAll('line')];
+
+/** Gummiband: je weiter man zieht, desto zäher wird es. */
+function ptrResist(dy) {
+  return PTR_MAX * (1 - Math.exp(-dy / 260));
+}
+
+/** Beim Ziehen erscheinen die Striche nacheinander, ohne Drehen. */
 function ptrPaint(pull) {
   const k = Math.min(1, pull / PTR_TRIGGER);
-  ptrEl.style.opacity = String(k);
-  ptrEl.style.transform = `translateY(${pull * 0.55 - 26}px) scale(${0.55 + 0.45 * k}) rotate(${pull * 3.6}deg)`;
+  const shown = Math.round(k * ptrLines.length);
+  ptrLines.forEach((l, i) => (l.style.opacity = i < shown ? '1' : '0'));
+  ptrEl.style.opacity = pull > 6 ? '1' : '0';
+  ptrEl.style.transform = `translateY(${Math.round(pull / 2 - 30)}px)`;
   viewsEl.style.transform = pull ? `translateY(${pull}px)` : '';
+}
+
+function ptrSpinLines(on) {
+  ptrLines.forEach((l) => (l.style.opacity = on ? l.dataset.o : ''));
 }
 
 function ptrBlocked(target) {
@@ -2200,7 +2215,7 @@ document.addEventListener(
     }
     e.preventDefault();
     const prev = ptrPull;
-    ptrPull = Math.min(PTR_MAX, dy * 0.5);
+    ptrPull = ptrResist(dy);
     if (prev < PTR_TRIGGER && ptrPull >= PTR_TRIGGER) navigator.vibrate?.(8);
     viewsEl.classList.add('pulling');
     ptrEl.classList.add('pulling');
@@ -2225,10 +2240,11 @@ document.addEventListener('touchcancel', () => ptrEnd(true));
 /** Sucht nach einer neuen Version (lädt sie dann automatisch) und aktualisiert die Anzeige. */
 async function refreshApp() {
   ptrBusy = true;
+  ptrSpinLines(true);
   ptrEl.classList.add('spin');
   ptrEl.style.opacity = '1';
-  ptrEl.style.transform = 'translateY(14px) scale(1)';
-  viewsEl.style.transform = 'translateY(58px)';
+  ptrEl.style.transform = `translateY(${PTR_HOLD / 2 - 30}px)`;
+  viewsEl.style.transform = `translateY(${PTR_HOLD}px)`;
   $('#ptr-status').textContent = 'Wird aktualisiert';
   const minWait = new Promise((r) => setTimeout(r, 1000));
   let updating = false;
@@ -2248,11 +2264,15 @@ async function refreshApp() {
   }
   processDue();
   render();
+  // Erst das Symbol sanft ausblenden, dann den Inhalt zurückgleiten lassen
+  ptrEl.style.opacity = '0';
+  await new Promise((r) => setTimeout(r, 180));
   ptrEl.classList.remove('spin');
+  ptrSpinLines(false);
   ptrPull = 0;
   ptrPaint(0);
   $('#ptr-status').textContent = 'Aktualisiert';
-  ptrBusy = false;
+  setTimeout(() => (ptrBusy = false), 350);
 }
 
 /* ---------- Service Worker & Updates ---------- */
