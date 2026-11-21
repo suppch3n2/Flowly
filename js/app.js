@@ -613,15 +613,27 @@ function unlockScroll() {
 }
 
 // Tastatur auf dem iPhone: Sheet über der Tastatur halten
+function keyboardLikelyOpen() {
+  const el = document.activeElement;
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return true;
+  return el.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'file', 'range', 'color'].includes(el.type);
+}
+
 function updateViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
-  const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  // Nur bei offener Tastatur verschieben. Beim iOS-Nachfedern (negatives offsetTop) nie.
+  const kb = keyboardLikelyOpen() ? Math.max(0, window.innerHeight - vv.height - Math.max(0, vv.offsetTop)) : 0;
   document.documentElement.style.setProperty('--kb', `${Math.round(kb)}px`);
-  document.documentElement.style.setProperty('--vvh', `${Math.round(vv.height)}px`);
+  document.documentElement.style.setProperty('--vvh', `${Math.round(Math.min(vv.height, window.innerHeight))}px`);
 }
 window.visualViewport?.addEventListener('resize', updateViewport);
 window.visualViewport?.addEventListener('scroll', updateViewport);
+// Nach dem Schließen der Tastatur sicher zurücksetzen
+document.addEventListener('focusin', () => setTimeout(updateViewport, 50));
+document.addEventListener('focusout', () => setTimeout(updateViewport, 120));
+window.addEventListener('orientationchange', () => setTimeout(updateViewport, 300));
 
 function openSheet({ title, body, onMount }) {
   const wrap = document.createElement('div');
@@ -2224,8 +2236,13 @@ document.addEventListener(
   { passive: false },
 );
 const ptrEnd = (cancelled) => {
-  if (ptrStart == null) return;
+  if (ptrStart == null) {
+    if (!ptrBusy && viewsEl.style.transform) ptrPaint(0);
+    updateViewport();
+    return;
+  }
   ptrStart = null;
+  updateViewport();
   viewsEl.classList.remove('pulling');
   ptrEl.classList.remove('pulling');
   if (!cancelled && ptrPull >= PTR_TRIGGER) refreshApp();
