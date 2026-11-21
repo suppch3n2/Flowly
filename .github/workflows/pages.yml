@@ -25,12 +25,9 @@ jobs:
       - name: Logik testen
         run: npm test
 
-  deploy:
+  build:
     needs: test
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - name: Seite zusammenstellen
@@ -38,10 +35,25 @@ jobs:
           mkdir _site
           cp -r index.html manifest.json sw.js .nojekyll css js fonts icons _site/
           # Cache-Version des Service Workers pro Deployment erneuern
-          sed -i "s/__BUILD__/${GITHUB_SHA::8}/" _site/sw.js
+          sed -i "s/__BUILD__/${GITHUB_SHA::8}-${GITHUB_RUN_ATTEMPT}/" _site/sw.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url || steps.retry.outputs.page_url }}
+    steps:
       - id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      # GitHub registriert das hochgeladene Paket manchmal mit Verzögerung – dann einmal neu versuchen
+      - if: steps.deployment.outcome == 'failure'
+        run: sleep 20
+      - id: retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
