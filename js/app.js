@@ -2176,6 +2176,16 @@ let ptrFrame = 0;
 let ptrTouchId = null;
 let ptrTarget = null;
 let ptrWatchdog = 0;
+let ptrCollapsed = false; // während des Ladens nach oben gewischt
+let ptrBusyY = null;
+
+/** Während des Ladens nach oben wischen: Inhalt gleitet hoch, Laden läuft im Hintergrund weiter. */
+function ptrCollapse() {
+  if (ptrCollapsed) return;
+  ptrCollapsed = true;
+  ptrEl.classList.add('done');
+  ptrMove(0);
+}
 
 /** iOS-Gummiband: anfangs fast 1:1, dann immer zäher. */
 function ptrResist(dy) {
@@ -2224,6 +2234,10 @@ document.addEventListener(
   (e) => {
     // Hängt noch etwas vom letzten Ziehen? Antippen setzt zurück.
     if (!ptrBusy && ptrStart == null && (viewsEl.style.transform || ptrArmed)) ptrReset();
+    if (ptrBusy) {
+      ptrBusyY = e.touches[0]?.clientY ?? null;
+      return;
+    }
     if (e.touches.length !== 1 || ptrBlocked(e.target)) return;
     ptrStart = e.touches[0].clientY;
     ptrTouchId = e.touches[0].identifier;
@@ -2241,6 +2255,11 @@ document.addEventListener(
 document.addEventListener(
   'touchmove',
   (e) => {
+    if (ptrBusy && ptrBusyY != null && !ptrCollapsed) {
+      // Nach oben gewischt? Dann Inhalt freigeben (kein preventDefault -> normales Scrollen geht weiter)
+      if (e.touches[0] && e.touches[0].clientY - ptrBusyY < -6) ptrCollapse();
+      return;
+    }
     if (ptrStart == null) return;
     const touch = [...e.touches].find((t) => t.identifier === ptrTouchId) || e.touches[0];
     if (!touch) return;
@@ -2343,6 +2362,8 @@ window.addEventListener('scroll', () => {
 /** Weich zurück auf die Halteposition, prüfen/aktualisieren, dann Symbol schrumpfen lassen. */
 async function refreshApp() {
   ptrBusy = true;
+  ptrCollapsed = false;
+  ptrBusyY = null;
   ptrSpin(true);
   ptrEl.style.opacity = '1';
   ptrMove(PTR_HOLD);
@@ -2370,11 +2391,13 @@ async function refreshApp() {
   } catch (err) {
     console.warn('Aktualisieren fehlgeschlagen', err);
   }
-  // Symbol schrumpft, gleichzeitig gleitet der Inhalt nach oben
+  // Symbol schrumpft, gleichzeitig gleitet der Inhalt nach oben (falls nicht schon weggewischt)
   ptrEl.classList.add('done');
   ptrMove(0);
-  await new Promise((r) => setTimeout(r, 420));
+  await new Promise((r) => setTimeout(r, ptrCollapsed ? 60 : 420));
   ptrReset();
+  ptrCollapsed = false;
+  ptrBusyY = null;
   $('#ptr-status').textContent = 'Aktualisiert';
   ptrBusy = false;
 }

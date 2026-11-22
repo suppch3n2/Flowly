@@ -999,3 +999,6 @@ html { height: 100%; }
 .ptr.spin svg { animation: ptrSpin 0.8s steps(8) infinite; }
 .views { position: relative; z-index: 1; will-change: transform; transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
 .views.pulling { transition: none; }
+
+/* Untere Leiste immer fest am unteren Rand */
+.tabbar.bottombar { bottom: 0; }
