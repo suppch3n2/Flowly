@@ -2161,36 +2161,49 @@ else {
   showLockScreen();
 }
 
-/* ---------- Ziehen zum Aktualisieren ---------- */
+/* ---------- Ziehen zum Aktualisieren (wie iOS / Phantom) ---------- */
 let swReg = null;
-const PTR_TRIGGER = 72; // entspricht rund 190 px Fingerweg
-const PTR_MAX = 140;
-const PTR_HOLD = 64; // Abstand, während das Symbol dreht
+const PTR_TRIGGER = 90; // Inhalt so weit gezogen -> Aktualisieren startet (ca. 185 px Fingerweg)
+const PTR_HOLD = 64; // Halteposition, während das Symbol dreht
 const ptrEl = $('#ptr');
 const viewsEl = $('.views');
+const ptrLines = [...ptrEl.querySelectorAll('line')];
 let ptrStart = null;
 let ptrPull = 0;
+let ptrArmed = false;
 let ptrBusy = false;
+let ptrFrame = 0;
 
-const ptrLines = [...ptrEl.querySelectorAll('line')];
-
-/** Gummiband: je weiter man zieht, desto zäher wird es. */
+/** iOS-Gummiband: anfangs fast 1:1, dann immer zäher. */
 function ptrResist(dy) {
-  return PTR_MAX * (1 - Math.exp(-dy / 260));
+  const d = window.innerHeight || 800;
+  return (1 - 1 / ((dy * 0.55) / d + 1)) * d;
 }
 
-/** Beim Ziehen erscheinen die Striche nacheinander, ohne Drehen. */
-function ptrPaint(pull) {
-  const k = Math.min(1, pull / PTR_TRIGGER);
-  const shown = Math.round(k * ptrLines.length);
+function ptrTicks(progress) {
+  // Striche erscheinen im Uhrzeigersinn, ohne Drehen
+  const shown = Math.min(ptrLines.length, Math.floor(progress * (ptrLines.length + 0.999)));
   ptrLines.forEach((l, i) => (l.style.opacity = i < shown ? '1' : '0'));
-  ptrEl.style.opacity = pull > 6 ? '1' : '0';
-  ptrEl.style.transform = `translateY(${Math.round(pull / 2 - 30)}px)`;
-  viewsEl.style.transform = pull ? `translateY(${pull}px)` : '';
 }
 
-function ptrSpinLines(on) {
+function ptrSpin(on) {
+  ptrEl.classList.toggle('spin', on);
   ptrLines.forEach((l) => (l.style.opacity = on ? l.dataset.o : ''));
+}
+
+function ptrMove(y) {
+  viewsEl.style.transform = y ? `translate3d(0, ${y.toFixed(1)}px, 0)` : '';
+}
+
+/** Zeichnet höchstens einmal pro Bildschirm-Frame – dadurch flüssig. */
+function ptrSchedule() {
+  if (ptrFrame) return;
+  ptrFrame = requestAnimationFrame(() => {
+    ptrFrame = 0;
+    ptrMove(ptrPull);
+    ptrEl.style.opacity = ptrPull > 4 ? '1' : '0';
+    if (!ptrArmed) ptrTicks(ptrPull / PTR_TRIGGER);
+  });
 }
 
 function ptrBlocked(target) {
@@ -2209,59 +2222,69 @@ document.addEventListener(
     if (e.touches.length !== 1 || ptrBlocked(e.target)) return;
     ptrStart = e.touches[0].clientY;
     ptrPull = 0;
+    ptrArmed = false;
   },
   { passive: true },
 );
+
 document.addEventListener(
   'touchmove',
   (e) => {
     if (ptrStart == null) return;
     const dy = e.touches[0].clientY - ptrStart;
     if (dy <= 0 || window.scrollY > 0) {
-      if (ptrPull) {
+      if (ptrPull && !ptrArmed) {
         ptrPull = 0;
-        ptrPaint(0);
+        ptrSchedule();
       }
-      if (window.scrollY > 0) ptrStart = null;
+      if (window.scrollY > 0 && !ptrArmed) ptrStart = null;
       return;
     }
     e.preventDefault();
-    const prev = ptrPull;
+    if (!viewsEl.classList.contains('pulling')) {
+      viewsEl.classList.add('pulling');
+      ptrEl.classList.remove('done');
+    }
     ptrPull = ptrResist(dy);
-    if (prev < PTR_TRIGGER && ptrPull >= PTR_TRIGGER) navigator.vibrate?.(8);
-    viewsEl.classList.add('pulling');
-    ptrEl.classList.add('pulling');
-    ptrPaint(ptrPull);
+    if (!ptrArmed && ptrPull >= PTR_TRIGGER) {
+      // Schwelle erreicht: wie bei iOS sofort drehen + kurzes Vibrieren
+      ptrArmed = true;
+      ptrSpin(true);
+      navigator.vibrate?.(10);
+    }
+    ptrSchedule();
   },
   { passive: false },
 );
-const ptrEnd = (cancelled) => {
+
+function ptrRelease(cancelled) {
   if (ptrStart == null) {
-    if (!ptrBusy && viewsEl.style.transform) ptrPaint(0);
+    if (!ptrBusy && viewsEl.style.transform) ptrMove(0);
     updateViewport();
     return;
   }
   ptrStart = null;
-  updateViewport();
   viewsEl.classList.remove('pulling');
-  ptrEl.classList.remove('pulling');
-  if (!cancelled && ptrPull >= PTR_TRIGGER) refreshApp();
-  else {
+  updateViewport();
+  if (ptrArmed && !cancelled) {
+    refreshApp();
+  } else {
+    ptrArmed = false;
+    ptrSpin(false);
     ptrPull = 0;
-    ptrPaint(0);
+    ptrMove(0);
+    ptrEl.style.opacity = '0';
   }
-};
-document.addEventListener('touchend', () => ptrEnd(false));
-document.addEventListener('touchcancel', () => ptrEnd(true));
+}
+document.addEventListener('touchend', () => ptrRelease(false));
+document.addEventListener('touchcancel', () => ptrRelease(true));
 
-/** Sucht nach einer neuen Version (lädt sie dann automatisch) und aktualisiert die Anzeige. */
+/** Weich zurück auf die Halteposition, prüfen/aktualisieren, dann Symbol schrumpfen lassen. */
 async function refreshApp() {
   ptrBusy = true;
-  ptrSpinLines(true);
-  ptrEl.classList.add('spin');
+  ptrSpin(true);
   ptrEl.style.opacity = '1';
-  ptrEl.style.transform = `translateY(${PTR_HOLD / 2 - 30}px)`;
-  viewsEl.style.transform = `translateY(${PTR_HOLD}px)`;
+  ptrMove(PTR_HOLD);
   $('#ptr-status').textContent = 'Wird aktualisiert';
   const minWait = new Promise((r) => setTimeout(r, 1000));
   let updating = false;
@@ -2281,15 +2304,17 @@ async function refreshApp() {
   }
   processDue();
   render();
-  // Erst das Symbol sanft ausblenden, dann den Inhalt zurückgleiten lassen
+  // Symbol schrumpft, gleichzeitig gleitet der Inhalt nach oben
+  ptrEl.classList.add('done');
+  ptrMove(0);
+  await new Promise((r) => setTimeout(r, 420));
+  ptrEl.classList.remove('done');
   ptrEl.style.opacity = '0';
-  await new Promise((r) => setTimeout(r, 180));
-  ptrEl.classList.remove('spin');
-  ptrSpinLines(false);
+  ptrSpin(false);
+  ptrArmed = false;
   ptrPull = 0;
-  ptrPaint(0);
   $('#ptr-status').textContent = 'Aktualisiert';
-  setTimeout(() => (ptrBusy = false), 350);
+  ptrBusy = false;
 }
 
 /* ---------- Service Worker & Updates ---------- */

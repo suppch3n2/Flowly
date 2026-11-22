@@ -983,3 +983,19 @@ select.input { background-image: linear-gradient(45deg, transparent 50%, var(--m
 /* iOS: kein Nachfedern der ganzen Seite (sonst verrutschen feste Leisten) */
 html, body { overscroll-behavior: none; }
 html { height: 100%; }
+
+/* ---------- Ziehen zum Aktualisieren 2.0 (iOS-Verhalten) ---------- */
+/* Symbol steht fest unter den Pillen und wird vom Inhalt aufgedeckt */
+.ptr {
+  top: calc(var(--sat) + 74px); width: 44px; height: 44px; margin-left: -22px;
+  z-index: 0; color: #8E95A6;
+  transform: none; opacity: 0;
+  transition: opacity 0.15s linear;
+}
+.ptr.pulling { transition: none; }
+.ptr-inner { width: 100%; height: 100%; display: grid; place-items: center; transition: transform 0.38s cubic-bezier(0.4, 0, 0.2, 1); }
+.ptr.done .ptr-inner { transform: scale(0); }
+.ptr line { transition: opacity 0.08s linear; }
+.ptr.spin svg { animation: ptrSpin 0.8s steps(8) infinite; }
+.views { position: relative; z-index: 1; will-change: transform; transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
+.views.pulling { transition: none; }
