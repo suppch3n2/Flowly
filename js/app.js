@@ -2173,6 +2173,9 @@ let ptrPull = 0;
 let ptrArmed = false;
 let ptrBusy = false;
 let ptrFrame = 0;
+let ptrTouchId = null;
+let ptrTarget = null;
+let ptrWatchdog = 0;
 
 /** iOS-Gummiband: anfangs fast 1:1, dann immer zäher. */
 function ptrResist(dy) {
@@ -2219,10 +2222,18 @@ function ptrBlocked(target) {
 document.addEventListener(
   'touchstart',
   (e) => {
+    // Hängt noch etwas vom letzten Ziehen? Antippen setzt zurück.
+    if (!ptrBusy && ptrStart == null && (viewsEl.style.transform || ptrArmed)) ptrReset();
     if (e.touches.length !== 1 || ptrBlocked(e.target)) return;
     ptrStart = e.touches[0].clientY;
+    ptrTouchId = e.touches[0].identifier;
     ptrPull = 0;
     ptrArmed = false;
+    // iOS liefert „Finger los“ immer ans ursprüngliche Element – auch wenn es nicht mehr im Dokument hängt
+    ptrTarget = e.target;
+    ptrTarget.addEventListener('touchend', ptrOnEnd, { once: true });
+    ptrTarget.addEventListener('touchcancel', ptrOnCancel, { once: true });
+    ptrKick();
   },
   { passive: true },
 );
@@ -2231,7 +2242,10 @@ document.addEventListener(
   'touchmove',
   (e) => {
     if (ptrStart == null) return;
-    const dy = e.touches[0].clientY - ptrStart;
+    const touch = [...e.touches].find((t) => t.identifier === ptrTouchId) || e.touches[0];
+    if (!touch) return;
+    ptrKick();
+    const dy = touch.clientY - ptrStart;
     if (dy <= 0 || window.scrollY > 0) {
       if (ptrPull && !ptrArmed) {
         ptrPull = 0;
@@ -2257,27 +2271,74 @@ document.addEventListener(
   { passive: false },
 );
 
+/** Notbremse: kommt 2 s lang kein Fingersignal, gilt der Finger als losgelassen. */
+function ptrKick() {
+  clearTimeout(ptrWatchdog);
+  ptrWatchdog = setTimeout(() => {
+    if (ptrStart != null) ptrRelease(false);
+  }, 2000);
+}
+
+function ptrDetach() {
+  clearTimeout(ptrWatchdog);
+  if (ptrTarget) {
+    ptrTarget.removeEventListener('touchend', ptrOnEnd);
+    ptrTarget.removeEventListener('touchcancel', ptrOnCancel);
+    ptrTarget = null;
+  }
+}
+
+/** Alles sofort in die Ausgangslage – egal in welchem Zustand. */
+function ptrReset() {
+  ptrDetach();
+  if (ptrFrame) cancelAnimationFrame(ptrFrame);
+  ptrFrame = 0;
+  ptrStart = null;
+  ptrTouchId = null;
+  ptrArmed = false;
+  ptrPull = 0;
+  viewsEl.classList.remove('pulling');
+  ptrEl.classList.remove('done');
+  ptrSpin(false);
+  ptrMove(0);
+  ptrEl.style.opacity = '0';
+}
+
 function ptrRelease(cancelled) {
   if (ptrStart == null) {
-    if (!ptrBusy && viewsEl.style.transform) ptrMove(0);
+    if (!ptrBusy && (viewsEl.style.transform || ptrArmed)) ptrReset();
     updateViewport();
     return;
   }
+  const armed = ptrArmed;
+  ptrDetach();
+  if (ptrFrame) cancelAnimationFrame(ptrFrame);
+  ptrFrame = 0;
   ptrStart = null;
+  ptrTouchId = null;
   viewsEl.classList.remove('pulling');
   updateViewport();
-  if (ptrArmed && !cancelled) {
-    refreshApp();
-  } else {
-    ptrArmed = false;
-    ptrSpin(false);
-    ptrPull = 0;
-    ptrMove(0);
-    ptrEl.style.opacity = '0';
-  }
+  if (armed && !cancelled) refreshApp();
+  else ptrReset();
 }
-document.addEventListener('touchend', () => ptrRelease(false));
-document.addEventListener('touchcancel', () => ptrRelease(true));
+function ptrOnEnd(e) {
+  if (e.touches && [...e.touches].some((t) => t.identifier === ptrTouchId)) return; // anderer Finger
+  ptrRelease(false);
+}
+function ptrOnCancel() {
+  ptrRelease(true);
+}
+document.addEventListener('touchend', ptrOnEnd);
+document.addEventListener('touchcancel', ptrOnCancel);
+// App verlassen, Seite gescrollt, Fenster verliert Fokus -> sicher zurücksetzen
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && !ptrBusy) ptrReset();
+});
+window.addEventListener('pagehide', () => !ptrBusy && ptrReset());
+window.addEventListener('blur', () => ptrStart != null && !ptrBusy && ptrReset());
+window.addEventListener('scroll', () => {
+  if (window.scrollY > 2 && ptrStart != null && !ptrBusy) ptrReset();
+}, { passive: true });
 
 /** Weich zurück auf die Halteposition, prüfen/aktualisieren, dann Symbol schrumpfen lassen. */
 async function refreshApp() {
@@ -2290,7 +2351,8 @@ async function refreshApp() {
   let updating = false;
   try {
     if (swReg) {
-      await swReg.update();
+      // Höchstens 4 Sekunden auf das Netz warten
+      await Promise.race([swReg.update(), new Promise((r) => setTimeout(r, 4000))]);
       updating = !!(swReg.installing || swReg.waiting);
     }
   } catch {
@@ -2302,17 +2364,17 @@ async function refreshApp() {
     setTimeout(() => location.reload(), 6000);
     return;
   }
-  processDue();
-  render();
+  try {
+    processDue();
+    render();
+  } catch (err) {
+    console.warn('Aktualisieren fehlgeschlagen', err);
+  }
   // Symbol schrumpft, gleichzeitig gleitet der Inhalt nach oben
   ptrEl.classList.add('done');
   ptrMove(0);
   await new Promise((r) => setTimeout(r, 420));
-  ptrEl.classList.remove('done');
-  ptrEl.style.opacity = '0';
-  ptrSpin(false);
-  ptrArmed = false;
-  ptrPull = 0;
+  ptrReset();
   $('#ptr-status').textContent = 'Aktualisiert';
   ptrBusy = false;
 }
