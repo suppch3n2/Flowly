@@ -2177,7 +2177,8 @@ let ptrTouchId = null;
 let ptrTarget = null;
 let ptrWatchdog = 0;
 let ptrCollapsed = false; // während des Ladens nach oben gewischt
-let ptrBusyY = null;
+let ptrRepull = null; // erneutes Ziehen während des Ladens
+let ptrRun = 0; // Nummer des aktuellen Ladevorgangs (neuer Start bricht alten ab)
 
 /** Während des Ladens nach oben wischen: Inhalt gleitet hoch, Laden läuft im Hintergrund weiter. */
 function ptrCollapse() {
@@ -2235,7 +2236,16 @@ document.addEventListener(
     // Hängt noch etwas vom letzten Ziehen? Antippen setzt zurück.
     if (!ptrBusy && ptrStart == null && (viewsEl.style.transform || ptrArmed)) ptrReset();
     if (ptrBusy) {
-      ptrBusyY = e.touches[0]?.clientY ?? null;
+      // Während des Ladens: nochmal ziehen (Neustart) oder hochwischen (Inhalt freigeben)
+      if (e.touches.length === 1 && !document.querySelector('.sheet-wrap, .dialog-wrap') && !e.target.closest('.area-plot, .pills, .tabbar, input, select, textarea')) {
+        const base = ptrCollapsed ? 0 : PTR_HOLD;
+        ptrRepull = { startY: e.touches[0].clientY, base, y: base, active: false };
+        ptrDetach();
+        ptrTarget = e.target;
+        ptrTarget.addEventListener('touchend', ptrOnEnd, { once: true });
+        ptrTarget.addEventListener('touchcancel', ptrOnCancel, { once: true });
+        ptrKick();
+      }
       return;
     }
     if (e.touches.length !== 1 || ptrBlocked(e.target)) return;
@@ -2255,9 +2265,31 @@ document.addEventListener(
 document.addEventListener(
   'touchmove',
   (e) => {
-    if (ptrBusy && ptrBusyY != null && !ptrCollapsed) {
-      // Nach oben gewischt? Dann Inhalt freigeben (kein preventDefault -> normales Scrollen geht weiter)
-      if (e.touches[0] && e.touches[0].clientY - ptrBusyY < -6) ptrCollapse();
+    if (ptrBusy) {
+      if (!ptrRepull || !e.touches[0]) return;
+      ptrKick();
+      const dyBusy = e.touches[0].clientY - ptrRepull.startY;
+      if (!ptrRepull.active) {
+        if (dyBusy < -6) {
+          // Nach oben gewischt: Inhalt freigeben, normales Scrollen geht weiter
+          ptrCollapse();
+          ptrRepull = null;
+          ptrDetach();
+          return;
+        }
+        if (dyBusy <= 6 || window.scrollY > 0) return;
+        ptrRepull.active = true;
+        viewsEl.classList.add('pulling');
+        if (ptrCollapsed) {
+          ptrCollapsed = false;
+          ptrEl.classList.remove('done');
+          ptrSpin(true);
+          ptrEl.style.opacity = '1';
+        }
+      }
+      e.preventDefault();
+      ptrRepull.y = ptrRepull.base + ptrResist(Math.max(0, dyBusy));
+      ptrMove(ptrRepull.y);
       return;
     }
     if (ptrStart == null) return;
@@ -2294,7 +2326,7 @@ document.addEventListener(
 function ptrKick() {
   clearTimeout(ptrWatchdog);
   ptrWatchdog = setTimeout(() => {
-    if (ptrStart != null) ptrRelease(false);
+    if (ptrStart != null || ptrRepull) ptrRelease(false);
   }, 2000);
 }
 
@@ -2324,6 +2356,23 @@ function ptrReset() {
 }
 
 function ptrRelease(cancelled) {
+  if (ptrRepull) {
+    const r = ptrRepull;
+    ptrRepull = null;
+    ptrDetach();
+    viewsEl.classList.remove('pulling');
+    if (!r.active) return;
+    if (!cancelled && r.y >= PTR_TRIGGER) {
+      navigator.vibrate?.(10);
+      refreshApp(); // Neustart – der laufende Ladevorgang wird verworfen
+    } else if (r.base === 0) {
+      ptrCollapsed = false;
+      ptrCollapse();
+    } else {
+      ptrMove(PTR_HOLD);
+    }
+    return;
+  }
   if (ptrStart == null) {
     if (!ptrBusy && (viewsEl.style.transform || ptrArmed)) ptrReset();
     updateViewport();
@@ -2361,9 +2410,10 @@ window.addEventListener('scroll', () => {
 
 /** Weich zurück auf die Halteposition, prüfen/aktualisieren, dann Symbol schrumpfen lassen. */
 async function refreshApp() {
+  const run = ++ptrRun;
   ptrBusy = true;
   ptrCollapsed = false;
-  ptrBusyY = null;
+  ptrEl.classList.remove('done');
   ptrSpin(true);
   ptrEl.style.opacity = '1';
   ptrMove(PTR_HOLD);
@@ -2380,11 +2430,18 @@ async function refreshApp() {
     /* offline – einfach neu anzeigen */
   }
   await minWait;
+  if (run !== ptrRun) return; // inzwischen neu gestartet
   if (updating) {
     // Neue Version wird installiert; der Service Worker übernimmt gleich und die Seite lädt neu
     setTimeout(() => location.reload(), 6000);
     return;
   }
+  // Zieht der Finger gerade nochmal? Dann erst das Ergebnis der Geste abwarten
+  while (ptrRepull && ptrRepull.active) {
+    await new Promise((r) => setTimeout(r, 100));
+    if (run !== ptrRun) return;
+  }
+  if (run !== ptrRun) return;
   try {
     processDue();
     render();
@@ -2392,12 +2449,14 @@ async function refreshApp() {
     console.warn('Aktualisieren fehlgeschlagen', err);
   }
   // Symbol schrumpft, gleichzeitig gleitet der Inhalt nach oben (falls nicht schon weggewischt)
+  const fadeMs = ptrCollapsed ? 60 : 420;
+  ptrCollapsed = true; // Inhalt ist jetzt oben – erneutes Ziehen startet von 0
   ptrEl.classList.add('done');
   ptrMove(0);
-  await new Promise((r) => setTimeout(r, ptrCollapsed ? 60 : 420));
+  await new Promise((r) => setTimeout(r, fadeMs));
+  if (run !== ptrRun) return;
   ptrReset();
   ptrCollapsed = false;
-  ptrBusyY = null;
   $('#ptr-status').textContent = 'Aktualisiert';
   ptrBusy = false;
 }
