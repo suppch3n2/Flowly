@@ -2,8 +2,8 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <!-- Datenschutz: nur eigene Dateien laden, keine Verbindungen zu fremden Servern -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <!-- Datenschutz: nur eigene Dateien; einzige Ausnahme: öffentliche Coin-Kurse/-Bilder von CoinGecko -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://coin-images.coingecko.com https://assets.coingecko.com; font-src 'self'; connect-src 'self' https://api.coingecko.com; manifest-src 'self'; worker-src 'self'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Flowly</title>
@@ -35,6 +35,7 @@
 
     <main class="views">
       <section class="view" id="view-start" data-view="start" aria-label="Start"></section>
+      <section class="view" id="view-coins" data-view="coins" aria-label="Coins"></section>
       <section class="view" id="view-numbers" data-view="numbers" aria-label="Zahlen"></section>
       <section class="view" id="view-budgets" data-view="budgets" aria-label="Budgets"></section>
       <section class="view" id="view-goals" data-view="goals" aria-label="Sparziele"></section>

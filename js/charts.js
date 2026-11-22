@@ -212,3 +212,85 @@ export function donutChart(items) {
     <g transform="rotate(-90 ${size / 2} ${size / 2})">${segs}</g>
   </svg>`;
 }
+
+/* ---------- Coin-Kurs: Linie & Kerzen ---------- */
+
+const COIN_W = 340;
+const COIN_H = 200;
+
+function coinY(v, min, max) {
+  const top = 10;
+  const bottom = COIN_H - 10;
+  return max === min ? (top + bottom) / 2 : bottom - ((v - min) / (max - min)) * (bottom - top);
+}
+
+/** Linie mit Fläche. points: [{t, v}] */
+export function coinLineChart(points, color) {
+  if (points.length < 2) return '<div class="coin-chart-empty">Keine Kursdaten</div>';
+  const vals = points.map((p) => p.v);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const t0 = points[0].t;
+  const t1 = points[points.length - 1].t;
+  const pts = points.map((p) => [((p.t - t0) / (t1 - t0 || 1)) * COIN_W, coinY(p.v, min, max)]);
+  const line = monotonePath(pts);
+  return `<svg viewBox="0 0 ${COIN_W} ${COIN_H}" preserveAspectRatio="none" aria-hidden="true">
+      <defs><linearGradient id="coinFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${color}" stop-opacity="0.3"/><stop offset="1" stop-color="${color}" stop-opacity="0"/>
+      </linearGradient></defs>
+      <path d="${line}L${COIN_W},${COIN_H}L0,${COIN_H}Z" fill="url(#coinFill)"/>
+      <path d="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    </svg>`;
+}
+
+/** Kerzen. candles: [{t, o, h, l, c}] */
+export function coinCandleChart(candles) {
+  if (candles.length < 2) return '<div class="coin-chart-empty">Keine Kursdaten</div>';
+  const min = Math.min(...candles.map((c) => c.l));
+  const max = Math.max(...candles.map((c) => c.h));
+  const slot = COIN_W / candles.length;
+  const bw = Math.max(1.2, slot * 0.62);
+  let out = '';
+  candles.forEach((c, i) => {
+    const up = c.c >= c.o;
+    const col = up ? '#6EE7B7' : '#F87171';
+    const x = slot * i + slot / 2;
+    const yo = coinY(c.o, min, max);
+    const yc = coinY(c.c, min, max);
+    const top = Math.min(yo, yc);
+    const h = Math.max(1, Math.abs(yo - yc));
+    out += `<line x1="${r1(x)}" x2="${r1(x)}" y1="${r1(coinY(c.h, min, max))}" y2="${r1(coinY(c.l, min, max))}" stroke="${col}" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+    out += `<rect x="${r1(x - bw / 2)}" y="${r1(top)}" width="${r1(bw)}" height="${r1(h)}" rx="${Math.min(1.5, bw / 3)}" fill="${col}"/>`;
+  });
+  return `<svg viewBox="0 0 ${COIN_W} ${COIN_H}" preserveAspectRatio="none" aria-hidden="true">${out}</svg>`;
+}
+
+/** Fingerbewegung über dem Chart: Kurs an der Stelle anzeigen. values: [{t, v}] */
+export function attachCoinScrub(box, values, onChange, centered = false) {
+  if (!box || values.length < 2) return;
+  const cursor = document.createElement('div');
+  cursor.className = 'coin-cursor';
+  box.appendChild(cursor);
+  const show = (e) => {
+    const rect = box.getBoundingClientRect();
+    const f = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const i = centered ? Math.min(values.length - 1, Math.floor(f * values.length)) : Math.round(f * (values.length - 1));
+    cursor.style.left = centered ? `${((i + 0.5) / values.length) * 100}%` : `${(i / (values.length - 1)) * 100}%`;
+    cursor.classList.add('on');
+    onChange(i);
+  };
+  const hide = () => {
+    cursor.classList.remove('on');
+    onChange(null);
+  };
+  box.addEventListener('pointerdown', (e) => {
+    box.setPointerCapture?.(e.pointerId);
+    show(e);
+  });
+  box.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'mouse' || e.buttons) show(e);
+  });
+  box.addEventListener('pointerup', hide);
+  box.addEventListener('pointercancel', hide);
+  box.addEventListener('pointerleave', (e) => e.pointerType === 'mouse' && hide());
+}

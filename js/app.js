@@ -2,7 +2,9 @@
 import * as L from './logic.js';
 import { loadState, saveState, storageAvailable, loadUi, saveUi } from './store.js';
 import { icon } from './icons.js';
-import { areaChart, attachAreaScrub, barChart, donutChart } from './charts.js';
+import { areaChart, attachAreaScrub, barChart, donutChart, coinLineChart, coinCandleChart, attachCoinScrub } from './charts.js';
+import * as Crypto from './crypto.js';
+import * as Market from './market.js';
 import * as Lock from './lock.js';
 import { merchantKey, suggestCategory, learnedKey } from './categorize.js';
 import { decodeBytes, parseImportText, buildCandidates, candidateToTransaction } from './importer.js';
@@ -15,6 +17,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 
 const TABS = [
   { id: 'start', label: 'Start' },
+  { id: 'coins', label: 'Coins' },
   { id: 'numbers', label: 'Zahlen' },
   { id: 'budgets', label: 'Budgets' },
   { id: 'goals', label: 'Ziele' },
@@ -442,6 +445,476 @@ function renderTxResults() {
     .join('') + (groups.length > shown.length ? `<p class="settings-note">Ältere Buchungen: bitte die Suche verwenden.</p>` : '');
 }
 
+/* ---------- Coins (Spielgeld, echte Kurse von CoinGecko) ---------- */
+
+const coins = {
+  markets: Market.cachedMarkets(),
+  prices: {},
+  loading: false,
+  error: '',
+  query: '',
+  results: null,
+  searching: false,
+};
+for (const c of coins.markets.list) coins.prices[c.id] = { price: c.price, change24h: c.change24h };
+
+function cashCents() {
+  const { transactions, settings } = state.data;
+  return L.balanceUntil(transactions, settings.startBalance, L.todayISO());
+}
+
+function coinById(id) {
+  const m = coins.markets.list.find((c) => c.id === id);
+  if (m) return m;
+  const h = state.data.crypto.holdings[id];
+  const r = (coins.results || []).find((c) => c.id === id);
+  const base = r || (h ? { id, symbol: h.symbol, name: h.name, image: h.image } : null);
+  if (!base) return null;
+  return { ...base, price: coins.prices[id]?.price ?? null, change24h: coins.prices[id]?.change24h ?? null };
+}
+
+function coinIcon(c, size = 44) {
+  const letter = esc((c.symbol || c.name || '?')[0] || '?');
+  const img = c.image ? `<img src="${esc(c.image)}" alt="" width="${size}" height="${size}" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : '';
+  return `<span class="coin-icon" style="width:${size}px;height:${size}px"><span>${letter}</span>${img}</span>`;
+}
+
+function changeHtml(pct) {
+  if (pct == null) return '<span class="chg">–</span>';
+  return `<span class="chg ${pct < 0 ? 'neg' : 'pos'}">${esc(Crypto.formatChange(pct))}</span>`;
+}
+
+function holdingRow(h) {
+  return `<li><button type="button" class="row tile coin-row" data-action="coin" data-id="${esc(h.id)}">
+    ${coinIcon(h)}
+    <span class="main"><span class="title">${esc(h.name)}</span><span class="sub">${esc(Crypto.formatQty(h.qty))} ${esc(h.symbol)}</span></span>
+    <span class="coin-right"><span class="price">${h.valueCents != null ? money(h.valueCents) : '–'}</span>${h.pnlCents != null ? `<span class="chg ${h.pnlCents < 0 ? 'neg' : 'pos'}">${money(h.pnlCents, { signed: true })}</span>` : ''}</span>
+  </button></li>`;
+}
+
+function coinRow(c, extra = '') {
+  return `<li><button type="button" class="row tile coin-row" data-action="coin" data-id="${esc(c.id)}">
+    ${coinIcon(c)}
+    <span class="main"><span class="title">${esc(c.name)}</span><span class="sub">${extra || esc(c.symbol)}</span></span>
+    <span class="coin-right"><span class="price">${c.price != null ? esc(Crypto.formatPrice(c.price)) : '–'}</span>${changeHtml(c.change24h)}</span>
+  </button></li>`;
+}
+
+async function loadMarkets(force = false) {
+  if (!state.data.settings.coinsOnline || coins.loading) return;
+  const fresh = Date.now() - (coins.markets.t || 0) < 60_000;
+  if (fresh && !force) return;
+  coins.loading = true;
+  coins.error = '';
+  try {
+    coins.markets = await Market.fetchMarkets({ force });
+    for (const c of coins.markets.list) coins.prices[c.id] = { price: c.price, change24h: c.change24h };
+    const missing = Object.keys(state.data.crypto.holdings).filter((id) => !coins.markets.list.some((c) => c.id === id));
+    if (missing.length) Object.assign(coins.prices, await Market.fetchPrices(missing, { force }));
+  } catch (err) {
+    coins.error = err?.message || 'Kurse konnten nicht geladen werden.';
+  } finally {
+    coins.loading = false;
+  }
+  if (state.tab === 'coins') renderCoinsBody();
+}
+
+function renderCoins() {
+  if (!state.data.settings.coinsOnline) {
+    return emptyState({
+      title: 'Coin-Kurse sind ausgeschaltet',
+      art: 'coin',
+      text: 'Für echte Kurse lädt Flowly öffentliche Kursdaten von CoinGecko. Es werden keine deiner Daten übertragen.',
+      actions: `<button type="button" class="btn primary block" data-action="coins-on">${icon('coin', 20)}Kurse einschalten</button>`,
+    });
+  }
+  return `<div class="stack">
+    <div id="coins-body">${coinsBodyHtml()}</div>
+  </div>`;
+}
+
+function coinsBodyHtml() {
+  const crypto = state.data.crypto;
+  const sum = Crypto.portfolioSummary(crypto, coins.prices);
+  const cash = cashCents();
+  const pnlTone = sum.pnlCents < 0 ? 'neg' : 'pos';
+  const time = coins.markets.t ? new Date(coins.markets.t).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+  const listItems = coins.query.trim().length >= 2 ? coins.results : coins.markets.list;
+  let list;
+  if (coins.query.trim().length >= 2 && coins.searching && !coins.results) list = '<p class="settings-note">Suche …</p>';
+  else if (!listItems || !listItems.length) {
+    list = coins.loading
+      ? '<div class="coin-skeleton"></div><div class="coin-skeleton"></div><div class="coin-skeleton"></div>'
+      : `<p class="settings-note">${coins.query.trim().length >= 2 ? 'Kein Coin gefunden.' : 'Noch keine Kurse geladen – zieh zum Aktualisieren nach unten.'}</p>`;
+  } else {
+    list = `<ul class="tx-list tiles">${listItems
+      .map((c) => {
+        const m = { ...c, price: coins.prices[c.id]?.price ?? c.price ?? null, change24h: coins.prices[c.id]?.change24h ?? c.change24h ?? null };
+        return coinRow(m, `${esc(m.symbol)}${m.rank ? ` · #${m.rank}` : ''}`);
+      })
+      .join('')}</ul>`;
+  }
+  return `
+    <section class="hero coins-hero ${sum.rows.length ? pnlTone : 'plain'}">
+      <div class="hero-label">Dein Depot</div>
+      <div class="hero-value">${money(sum.valueCents)}</div>
+      ${sum.rows.length ? `<div class="hero-delta static">${money(sum.pnlCents, { signed: true })}</div>` : ''}
+      <div class="coins-cash">Verfügbar zum Kaufen: <b>${money(Math.max(0, cash))}</b></div>
+    </section>
+
+    ${sum.rows.length
+      ? `<section><h3 class="section-link static">Deine Coins</h3><ul class="tx-list tiles">${sum.rows.map(holdingRow).join('')}</ul></section>`
+      : ''}
+
+    <section>
+      <h3 class="section-link static">Alle Coins</h3>
+      <label class="search coin-search ${coins.query ? 'has-value' : ''}">
+        ${icon('search', 20)}
+        <span class="sr-only">Coins suchen</span>
+        <input type="search" id="coin-search" placeholder="Coin suchen, z. B. Bitcoin, SOL" value="${esc(coins.query)}" autocomplete="off" enterkeyhint="search">
+      </label>
+      ${coins.error ? `<div class="warning-note" style="margin-top:12px">${icon('alert', 18)}<span>${esc(coins.error)}${coins.markets.t ? ' Angezeigt werden die letzten bekannten Kurse.' : ''}</span></div>` : ''}
+      <div style="margin-top:12px">${list}</div>
+      <p class="settings-note">Kurse: CoinGecko${time ? ` · Stand ${esc(time)} Uhr` : ''} · Kaufen/Verkaufen mit Spielgeld – es fließt kein echtes Geld.</p>
+    </section>`;
+}
+
+function renderCoinsBody() {
+  const body = $('#coins-body');
+  if (!body) return render();
+  const input = $('#coin-search', body);
+  const focused = document.activeElement === input;
+  const pos = input?.selectionStart;
+  body.innerHTML = coinsBodyHtml();
+  mountCoinSearch(body);
+  if (focused) {
+    const again = $('#coin-search', body);
+    again.focus();
+    try {
+      again.setSelectionRange(pos, pos);
+    } catch {
+      /* egal */
+    }
+  }
+}
+
+let coinSearchTimer;
+function mountCoinSearch(root) {
+  const input = $('#coin-search', root);
+  if (!input) return;
+  input.addEventListener('input', () => {
+    coins.query = input.value;
+    input.closest('.search').classList.toggle('has-value', !!input.value);
+    clearTimeout(coinSearchTimer);
+    const q = input.value.trim();
+    if (q.length < 2) {
+      coins.results = null;
+      coins.searching = false;
+      renderCoinsBody();
+      return;
+    }
+    // Erst lokal in den Top-Coins suchen, dann bei CoinGecko
+    const lq = q.toLowerCase();
+    coins.results = coins.markets.list.filter((c) => c.name.toLowerCase().includes(lq) || c.symbol.toLowerCase().includes(lq));
+    coins.searching = true;
+    renderCoinsBody();
+    coinSearchTimer = setTimeout(async () => {
+      try {
+        const found = await Market.searchCoins(q);
+        if (coins.query.trim() !== q) return;
+        const ids = found.map((c) => c.id).filter((id) => !coins.prices[id]).slice(0, 25);
+        if (ids.length) Object.assign(coins.prices, await Market.fetchPrices(ids).catch(() => ({})));
+        const local = coins.results || [];
+        coins.results = [...local, ...found.filter((f) => !local.some((l) => l.id === f.id))];
+      } catch (err) {
+        coins.error = err?.message || '';
+      }
+      coins.searching = false;
+      renderCoinsBody();
+    }, 450);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') input.blur();
+  });
+}
+
+function mountCoins(root) {
+  mountCoinSearch(root);
+  loadMarkets(false);
+}
+
+/* Detailansicht eines Coins */
+function openCoinSheet(id) {
+  const coin = coinById(id);
+  if (!coin) return;
+  const pref = { range: '7', type: state.data.crypto.chart || 'line' };
+  const holding = () => state.data.crypto.holdings[id];
+  const priceNow = () => coins.prices[id]?.price ?? coin.price ?? null;
+  const change = () => coins.prices[id]?.change24h ?? coin.change24h ?? null;
+
+  openSheet({
+    title: coin.name,
+    body: `
+      <div class="coin-head">
+        ${coinIcon(coin, 40)}
+        <div class="main"><div class="coin-price" id="c-price">${esc(Crypto.formatPrice(priceNow()))}</div>
+          <div class="coin-sub" id="c-sub">${changeHtml(change())} <span class="muted">24 Std.</span></div></div>
+      </div>
+      <div class="coin-chart" id="c-chart"><div class="coin-chart-empty">Lade Chart …</div></div>
+      <div class="coin-controls">
+        <div class="seg seg-small" id="c-range" role="group" aria-label="Zeitraum">${Crypto.RANGES.map((r) => `<button type="button" data-range="${r.id}" aria-pressed="${r.id === pref.range}">${r.label}</button>`).join('')}</div>
+        <div class="seg seg-small seg-icons" id="c-type" role="group" aria-label="Darstellung">
+          <button type="button" data-type="line" aria-pressed="${pref.type === 'line'}" aria-label="Linie">${icon('chart', 18)}</button>
+          <button type="button" data-type="candles" aria-pressed="${pref.type === 'candles'}" aria-label="Kerzen">${icon('candles', 18)}</button>
+        </div>
+      </div>
+      <div id="c-position"></div>
+      <div class="coin-actions">
+        <button type="button" class="btn primary" id="c-buy">${icon('plus', 20)}Kaufen</button>
+        <button type="button" class="btn" id="c-sell">${icon('arrowOut', 20)}Verkaufen</button>
+      </div>
+      <p class="settings-note">Spielgeld – es fließt kein echtes Geld. Kurse: CoinGecko.</p>`,
+    onMount(sheet, close) {
+      const chartBox = $('#c-chart', sheet);
+      let token = 0;
+      const paintPosition = () => {
+        const h = holding();
+        const p = priceNow();
+        $('#c-position', sheet).innerHTML = h
+          ? `<div class="coin-position"><div><span class="eyebrow">Du hast</span><strong>${esc(Crypto.formatQty(h.qty))} ${esc(coin.symbol)}</strong></div>
+             <div><span class="eyebrow">Wert</span><strong>${p != null ? money(Crypto.holdingValueCents(h.qty, p)) : '–'}</strong></div></div>`
+          : '';
+        $('#c-sell', sheet).disabled = !h;
+      };
+      const loadChart = async () => {
+        const my = ++token;
+        chartBox.innerHTML = '<div class="coin-chart-empty"><span class="mini-spin"></span></div>';
+        try {
+          const data = await Market.fetchChart(id, pref.range, pref.type);
+          if (my !== token) return;
+          const values = pref.type === 'candles' ? data.map((c) => ({ t: c.t, v: c.c })) : data;
+          const first = values[0]?.v;
+          const last = values[values.length - 1]?.v;
+          const color = last != null && first != null && last < first ? '#F87171' : '#6EE7B7';
+          chartBox.innerHTML = pref.type === 'candles' ? coinCandleChart(data) : coinLineChart(data, color);
+          const fmtTime = (t) =>
+            new Date(t).toLocaleString('de-DE', pref.range === '1' ? { hour: '2-digit', minute: '2-digit' } : { day: 'numeric', month: 'short', year: pref.range === '365' ? 'numeric' : undefined });
+          attachCoinScrub(
+            chartBox,
+            values,
+            (i) => {
+              if (i == null) {
+                $('#c-price', sheet).textContent = Crypto.formatPrice(priceNow());
+                $('#c-sub', sheet).innerHTML = `${changeHtml(change())} <span class="muted">24 Std.</span>`;
+                return;
+              }
+              const v = values[i];
+              const pct = first ? ((v.v - first) / first) * 100 : null;
+              $('#c-price', sheet).textContent = Crypto.formatPrice(v.v);
+              $('#c-sub', sheet).innerHTML = `${changeHtml(pct)} <span class="muted">${esc(fmtTime(v.t))}</span>`;
+            },
+            pref.type === 'candles',
+          );
+        } catch (err) {
+          if (my !== token) return;
+          chartBox.innerHTML = `<div class="coin-chart-empty">${esc(err?.message || 'Chart konnte nicht geladen werden.')}</div>`;
+        }
+      };
+      const paintSeg = (box, attr, val) => box.querySelectorAll(`[data-${attr}]`).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset[attr] === val)));
+      $('#c-range', sheet).addEventListener('click', (e) => {
+        const b = e.target.closest('[data-range]');
+        if (!b || b.dataset.range === pref.range) return;
+        pref.range = b.dataset.range;
+        paintSeg($('#c-range', sheet), 'range', pref.range);
+        loadChart();
+      });
+      $('#c-type', sheet).addEventListener('click', (e) => {
+        const b = e.target.closest('[data-type]');
+        if (!b || b.dataset.type === pref.type) return;
+        pref.type = b.dataset.type;
+        state.data.crypto.chart = pref.type;
+        saveState(state.data);
+        paintSeg($('#c-type', sheet), 'type', pref.type);
+        loadChart();
+      });
+      $('#c-buy', sheet).addEventListener('click', () => openTradeSheet(coin, 'buy', paintPosition));
+      $('#c-sell', sheet).addEventListener('click', () => openTradeSheet(coin, 'sell', paintPosition));
+      paintPosition();
+      loadChart();
+      // Aktuellen Kurs holen (falls aus der Suche oder veraltet)
+      Market.fetchPrices([id])
+        .then((p) => {
+          if (!p[id]) return;
+          coins.prices[id] = p[id];
+          $('#c-price', sheet).textContent = Crypto.formatPrice(p[id].price);
+          $('#c-sub', sheet).innerHTML = `${changeHtml(p[id].change24h)} <span class="muted">24 Std.</span>`;
+          paintPosition();
+        })
+        .catch(() => {});
+    },
+  });
+}
+
+/* Kaufen / Verkaufen */
+function openTradeSheet(coin, side, onDone) {
+  let mode = 'eur';
+  const sym = esc(coin.symbol);
+  openSheet({
+    title: `${coin.name} ${side === 'buy' ? 'kaufen' : 'verkaufen'}`,
+    body: `
+      <div class="seg" id="t-side" role="group" aria-label="Kaufen oder verkaufen" style="margin-top:0">
+        <span class="thumb" style="width:calc((100% - 8px) / 2);transform:translateX(${side === 'buy' ? 0 : 100}%)"></span>
+        <button type="button" data-side="buy" aria-pressed="${side === 'buy'}">Kaufen</button>
+        <button type="button" data-side="sell" aria-pressed="${side === 'sell'}">Verkaufen</button>
+      </div>
+      <div class="seg seg-small" id="t-mode" role="group" aria-label="Eingabe in">
+        <button type="button" data-mode="eur" aria-pressed="true">In Euro</button>
+        <button type="button" data-mode="qty" aria-pressed="false">In ${sym}</button>
+      </div>
+      <div class="field">
+        <label for="t-input" id="t-label"></label>
+        <div class="amount-field"><input id="t-input" type="text" inputmode="decimal" autocomplete="off" placeholder="0" maxlength="20"><span class="cur" id="t-unit">€</span></div>
+      </div>
+      <div class="chips"><button type="button" class="chip" id="t-all"></button></div>
+      <div class="trade-preview" id="t-preview"></div>
+      <div class="form-error" id="t-error"></div>
+      <button type="button" class="btn primary block" id="t-go"></button>
+      <p class="settings-note">Spielgeld: Der Betrag wird von deinem Flowly-Kontostand ${side === 'buy' ? 'abgezogen' : 'gutgeschrieben'} und als Umsatz gebucht. Es fließt kein echtes Geld.</p>`,
+    onMount(sheet, close) {
+      const input = $('#t-input', sheet);
+      let all = false;
+      const price = () => coins.prices[coin.id]?.price ?? coin.price ?? null;
+      const have = () => state.data.crypto.holdings[coin.id]?.qty || 0;
+      const quote = () => {
+        const raw = input.value.trim();
+        let val = null;
+        if (!all) val = mode === 'eur' ? L.parseAmount(raw) : Crypto.parseQty(raw);
+        if (!all && val == null) return { ok: false, error: raw ? 'Bitte eine gültige Zahl eingeben.' : '' };
+        return Crypto.quoteTrade({ side, mode: all ? 'all' : mode, input: val, priceEur: price(), cashCents: cashCents(), holdingQty: have() });
+      };
+      const paint = () => {
+        $('#t-label', sheet).textContent = side === 'buy' ? (mode === 'eur' ? 'Für wie viel Euro kaufen?' : `Wie viele ${coin.symbol} kaufen?`) : mode === 'eur' ? 'Wie viel Euro möchtest du bekommen?' : `Wie viele ${coin.symbol} verkaufen?`;
+        $('#t-unit', sheet).textContent = mode === 'eur' ? '€' : coin.symbol;
+        $('#t-all', sheet).textContent = side === 'buy' ? `Alles (${money(Math.max(0, cashCents()))})` : `Alles (${Crypto.formatQty(have())} ${coin.symbol})`;
+        $('#t-all', sheet).classList.toggle('on', all);
+        const q = quote();
+        const p = price();
+        $('#t-preview', sheet).innerHTML = q.ok
+          ? `<div><span class="eyebrow">${side === 'buy' ? 'Du bekommst' : 'Du verkaufst'}</span><strong>${esc(Crypto.formatQty(q.qty))} ${sym}</strong></div>
+             <div><span class="eyebrow">${side === 'buy' ? 'Du zahlst' : 'Du bekommst'}</span><strong>${money(q.totalCents)}</strong></div>
+             <div class="full muted">Kurs ${esc(Crypto.formatPrice(p))} · ${side === 'buy' ? `Verfügbar ${money(Math.max(0, cashCents()))}` : `Im Depot ${esc(Crypto.formatQty(have()))} ${sym}`}</div>`
+          : `<div class="full muted">Kurs ${esc(Crypto.formatPrice(p))} · ${side === 'buy' ? `Verfügbar ${money(Math.max(0, cashCents()))}` : `Im Depot ${esc(Crypto.formatQty(have()))} ${sym}`}</div>`;
+        $('#t-error', sheet).textContent = q.ok ? '' : q.error || '';
+        const go = $('#t-go', sheet);
+        go.innerHTML = `${icon('check', 20)}${side === 'buy' ? 'Jetzt kaufen' : 'Jetzt verkaufen'}`;
+        go.disabled = !q.ok;
+      };
+      $('#t-side', sheet).addEventListener('click', (e) => {
+        const b = e.target.closest('[data-side]');
+        if (!b || b.dataset.side === side) return;
+        side = b.dataset.side;
+        all = false;
+        $('#t-side .thumb', sheet).style.transform = `translateX(${side === 'buy' ? 0 : 100}%)`;
+        $('#t-side', sheet).querySelectorAll('[data-side]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.side === side)));
+        $('.sheet-head h2', sheet.closest('.sheet-wrap')).textContent = `${coin.name} ${side === 'buy' ? 'kaufen' : 'verkaufen'}`;
+        paint();
+      });
+      $('#t-mode', sheet).addEventListener('click', (e) => {
+        const b = e.target.closest('[data-mode]');
+        if (!b || b.dataset.mode === mode) return;
+        mode = b.dataset.mode;
+        all = false;
+        input.value = '';
+        $('#t-mode', sheet).querySelectorAll('[data-mode]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.mode === mode)));
+        paint();
+      });
+      input.addEventListener('input', () => {
+        const cleaned = input.value.replace(/[^\d.,]/g, '');
+        if (cleaned !== input.value) input.value = cleaned;
+        all = false;
+        paint();
+      });
+      $('#t-all', sheet).addEventListener('click', () => {
+        all = !all;
+        if (all) input.value = '';
+        paint();
+      });
+      $('#t-go', sheet).addEventListener('click', async () => {
+        const go = $('#t-go', sheet);
+        go.disabled = true;
+        // Kurz vor dem Ausführen den aktuellen Kurs holen
+        try {
+          const p = await Market.fetchPrices([coin.id], { force: true });
+          if (p[coin.id]) coins.prices[coin.id] = p[coin.id];
+        } catch {
+          /* letzter bekannter Kurs */
+        }
+        const q = quote();
+        if (!q.ok) {
+          paint();
+          return;
+        }
+        const now = Date.now();
+        const trade = Crypto.applyTrade(state.data.crypto, {
+          side,
+          coin,
+          qty: q.qty,
+          totalCents: q.totalCents,
+          priceEur: price(),
+          date: L.todayISO(),
+          id: L.uid(),
+          createdAt: now,
+        });
+        state.data.transactions.push({
+          id: L.uid(),
+          type: side === 'buy' ? 'expense' : 'income',
+          amount: q.totalCents,
+          category: 'krypto',
+          note: `${side === 'buy' ? 'Kauf' : 'Verkauf'} ${Crypto.formatQty(q.qty)} ${coin.symbol}`,
+          date: L.todayISO(),
+          createdAt: now,
+          src: 'crypto',
+          extId: `crypto:${trade.id}`,
+          merchant: coin.name,
+        });
+        close();
+        commit(`${side === 'buy' ? 'Gekauft' : 'Verkauft'}: ${Crypto.formatQty(q.qty)} ${coin.symbol} für ${money(q.totalCents)}`);
+        onDone?.();
+        if (state.tab === 'coins') renderCoinsBody();
+      });
+      paint();
+    },
+  });
+}
+
+/* Krypto-Umsatz antippen: Details und Rückgängig */
+function openCryptoTxSheet(tx) {
+  const tradeId = (tx.extId || '').replace(/^crypto:/, '');
+  const trade = state.data.crypto.trades.find((t) => t.id === tradeId);
+  openSheet({
+    title: tx.type === 'expense' ? 'Coin-Kauf' : 'Coin-Verkauf',
+    body: `
+      <div class="settings-group">
+        <div class="settings-row" style="cursor:default"><span class="ri">${icon('coin', 18)}</span><span class="main">${esc(tx.note)}<span class="sub">${esc(L.shortDate(tx.date))}${trade?.priceEur ? ` · Kurs ${esc(Crypto.formatPrice(trade.priceEur))}` : ''}</span></span><span class="amount ${tx.type === 'income' ? 'in' : 'out'}">${money(tx.type === 'income' ? tx.amount : -tx.amount, { signed: true })}</span></div>
+      </div>
+      <p class="muted" style="margin:0">Mit Spielgeld gekauft bzw. verkauft. Rückgängig machen bucht Betrag und Coins zurück.</p>
+      <button type="button" class="btn danger block" id="x-undo">${icon('trash', 20)}Rückgängig machen</button>`,
+    onMount(sheet, close) {
+      $('#x-undo', sheet).addEventListener('click', async () => {
+        const ok = await confirmDialog({ title: 'Trade rückgängig machen?', message: `${tx.note} wird zurückgebucht.`, confirmLabel: 'Rückgängig', danger: true });
+        if (!ok) return;
+        if (trade && !Crypto.revertTrade(state.data.crypto, trade.id)) {
+          toast('Geht nicht – die Coins wurden inzwischen verkauft.', true);
+          return;
+        }
+        state.data.transactions = state.data.transactions.filter((t) => t.id !== tx.id);
+        close();
+        commit('Trade rückgängig gemacht');
+      });
+    },
+  });
+}
+
 /* ---------- Budgets ---------- */
 
 function budgetStateLabel(status) {
@@ -544,6 +1017,7 @@ function renderGoals() {
 
 const VIEWS = {
   start: [renderStart, mountStart],
+  coins: [renderCoins, mountCoins],
   numbers: [renderNumbers, null],
   budgets: [renderBudgets, null],
   goals: [renderGoals, null],
@@ -746,7 +1220,7 @@ function addDays(iso, n) {
   return L.toISODate(new Date(y, m - 1, d + n));
 }
 
-const SOURCE_LABEL = { applepay: 'Apple Pay', bank: 'Kontoauszug', recurring: 'Dauerauftrag' };
+const SOURCE_LABEL = { applepay: 'Apple Pay', bank: 'Kontoauszug', recurring: 'Dauerauftrag', crypto: 'Coins' };
 
 /** Kategorie gezielt geändert: für den Händler merken und automatisch zugeordnete Buchungen mitziehen. */
 function learnCategory(type, mkey, category, exceptId) {
@@ -1592,6 +2066,7 @@ function renderSettings() {
         <button type="button" class="settings-row" id="s-csv"><span class="ri">${icon('download', 18)}</span><span class="main">Zahlungen importieren<span class="sub">Apple-Pay-Datei oder Kontoauszug (CSV)</span></span>${icon('chevronRight', 18)}</button>
         <button type="button" class="settings-row" id="s-rec"><span class="ri">${icon('repeat', 18)}</span><span class="main">Geplant & Daueraufträge<span class="sub">${state.data.recurring.length} angelegt</span></span>${icon('chevronRight', 18)}</button>
         <button type="button" class="settings-row" id="s-importcard" role="switch" aria-checked="${!state.data.settings.hideImport}"><span class="ri">${icon('overview', 18)}</span><span class="main">Import-Karte auf Start<span class="sub">Aus = du trägst deine Zahlen selbst ein</span></span><span class="switch"></span></button>
+        <button type="button" class="settings-row" id="s-coins" role="switch" aria-checked="${state.data.settings.coinsOnline}"><span class="ri">${icon('coin', 18)}</span><span class="main">Coin-Kurse laden<span class="sub">Öffentliche Kurse von CoinGecko – ohne deine Daten</span></span><span class="switch"></span></button>
         <button type="button" class="settings-row" id="s-learned"><span class="ri">${icon('pencil', 18)}</span><span class="main">Gelernte Kategorien<span class="sub">${Object.keys(state.data.learned).length} Händler gemerkt</span></span>${icon('chevronRight', 18)}</button>
       </div>
 
@@ -1614,7 +2089,7 @@ function renderSettings() {
         <ul>
           <li>Alles wird nur lokal in diesem Browser auf deinem Gerät gespeichert.</li>
           <li>Kein Server, kein Konto, kein Tracking, keine Analytics, keine Cookies.</li>
-          <li>Flowly baut keine Verbindungen zu fremden Diensten auf.</li>
+          <li>Einzige Ausnahme: Für den Bereich „Coins“ lädt Flowly öffentliche Kurse und Coin-Bilder von CoinGecko. Dabei werden keine deiner Daten übertragen (abschaltbar oben unter „Coin-Kurse laden“).</li>
           <li>Backups werden nur als Datei auf deinem Gerät abgelegt – nie hochgeladen.</li>
           <li>Importierte Dateien werden nur gelesen, nie verschickt.</li>
         </ul>
@@ -1648,6 +2123,11 @@ function mountSettings(sheet) {
       $('#s-rec', sheet).addEventListener('click', openRecurringList);
       $('#s-learned', sheet).addEventListener('click', openLearnedList);
       $('#s-limit', sheet).addEventListener('click', openLimitSheet);
+      $('#s-coins', sheet).addEventListener('click', (e) => {
+        state.data.settings.coinsOnline = !state.data.settings.coinsOnline;
+        e.currentTarget.setAttribute('aria-checked', String(state.data.settings.coinsOnline));
+        saveState(state.data);
+      });
       $('#s-importcard', sheet).addEventListener('click', (e) => {
         const b = e.currentTarget;
         state.data.settings.hideImport = !state.data.settings.hideImport;
@@ -1789,6 +2269,14 @@ document.addEventListener('click', (e) => {
     case 'edit-limit':
       openLimitSheet();
       break;
+    case 'coin':
+      openCoinSheet(el.dataset.id);
+      break;
+    case 'coins-on':
+      state.data.settings.coinsOnline = true;
+      commit('Coin-Kurse eingeschaltet');
+      loadMarkets(true);
+      break;
     case 'month-prev':
       state.month = L.addMonths(state.month, -1);
       render();
@@ -1805,7 +2293,8 @@ document.addEventListener('click', (e) => {
       break;
     case 'edit-tx': {
       const tx = state.data.transactions.find((t) => t.id === el.dataset.id);
-      if (tx) openEntrySheet({ tx });
+      if (tx?.src === 'crypto') openCryptoTxSheet(tx);
+      else if (tx) openEntrySheet({ tx });
       break;
     }
     case 'load-sample':
@@ -2423,7 +2912,10 @@ async function refreshApp() {
   try {
     if (swReg) {
       // Höchstens 4 Sekunden auf das Netz warten
-      await Promise.race([swReg.update(), new Promise((r) => setTimeout(r, 4000))]);
+      await Promise.race([
+        Promise.all([swReg.update(), state.tab === 'coins' ? loadMarkets(true) : null]),
+        new Promise((r) => setTimeout(r, 4000)),
+      ]);
       updating = !!(swReg.installing || swReg.waiting);
     }
   } catch {

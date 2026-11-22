@@ -15,6 +15,8 @@ const ASSETS = [
   './js/categorize.js',
   './js/importer.js',
   './js/recurring.js',
+  './js/crypto.js',
+  './js/market.js',
   './fonts/inter-latin.woff2',
   './fonts/space-grotesk-latin.woff2',
   './icons/apple-touch-icon.png',

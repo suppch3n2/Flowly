@@ -8,6 +8,7 @@ Finanz-App als Progressive Web App, optimiert fürs iPhone. Reines HTML, CSS und
 
 - **Aufbau:** oben Reiter als Pillen (Start · Zahlen · Budgets · Ziele · Einstellungen), auf Start der Kontostand groß mit Rest vom Ausgaben-Limit (+ grün / − rot) und die letzten Umsätze, unten Suche und Plus
 
+- **Coins:** echte Kurse aller Coins (CoinGecko), Suche, Chart als Linie oder Kerzen (1T/1W/1M/1J), Kaufen/Verkaufen mit Spielgeld aus dem Flowly-Kontostand (in Euro, nach Menge oder alles); jeder Trade erscheint als Umsatz
 - **Zahlen:** Einnahmen/Ausgaben/Sparquote, Limit, Balkendiagramm der letzten 6 Monate, Ringdiagramm nach Kategorie, alle Umsätze nach Datum mit Filter; Suche über die Leiste unten
 - **Budgets:** Monatslimit pro Kategorie, Warnfarbe ab 90 % und über 100 %
 - **Sparziele:** anlegen, Geld hinzufügen, löschen
@@ -24,8 +25,9 @@ Finanz-App als Progressive Web App, optimiert fürs iPhone. Reines HTML, CSS und
 ## Datenschutz
 
 - **Alle Daten bleiben auf dem Gerät** (localStorage im Browser). Es gibt keinen Server, kein Konto, keine Synchronisation.
-- **Kein Tracking, keine Analytics, keine Cookies, keine externen Dienste.** Auch die Schriften sind lokal eingebunden.
-- Eine **Content-Security-Policy** in `index.html` verbietet technisch jede Verbindung zu fremden Servern (`connect-src 'self'`).
+- **Kein Tracking, keine Analytics, keine Cookies.** Auch die Schriften sind lokal eingebunden.
+- **Einzige externe Verbindung:** Der Bereich „Coins“ lädt öffentliche Kurse und Coin-Bilder von CoinGecko (`api.coingecko.com`, `coin-images.coingecko.com`). Gesendet werden dabei nur die abgefragten Coin-Namen – keine Buchungen, kein Depot, keine Kennung, kein Cookie. Abschaltbar in den Einstellungen.
+- Eine **Content-Security-Policy** in `index.html` erlaubt technisch nur diese eine Ausnahme und verbietet alle anderen fremden Verbindungen.
 - **Backups** werden nur als Datei auf dem Gerät gespeichert (Download), nie hochgeladen. `.gitignore` verhindert, dass Backup-Dateien versehentlich ins Repository gelangen.
 - **Importierte Dateien** (Apple-Pay-Datei, Kontoauszug) werden nur lokal gelesen. Empfohlener Ablageort: „Auf meinem iPhone“ statt iCloud Drive, damit nichts synchronisiert wird.
 - **Beispieldaten** sind frei erfunden und werden im Code erzeugt.
@@ -52,6 +54,8 @@ npm test                      # Logik-Tests (Node 20+, keine Abhängigkeiten)
 | `js/lock.js` | Optionale PIN-Sperre (PBKDF2-Hash, Fehlversuch-Sperre) |
 | `js/importer.js` | Apple-Pay-Datei & Bank-CSV lesen, Formaterkennung, Duplikate |
 | `js/categorize.js` | Automatische Kategorien & gelernte Händler |
+| `js/crypto.js` | Depot, Kauf/Verkauf (Spielgeld), Prüfung der Coin-Daten |
+| `js/market.js` | Kursabfrage bei CoinGecko mit Zwischenspeicher |
 | `js/recurring.js` | Daueraufträge buchen, wiederkehrende Zahlungen erkennen |
 | `js/app.js` | Oberfläche, Tabs, Bottom-Sheets, Dialoge |
 | `js/charts.js` | SVG-Diagramme |

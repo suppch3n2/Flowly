@@ -1002,3 +1002,46 @@ html { height: 100%; }
 
 /* Untere Leiste immer fest am unteren Rand */
 .tabbar.bottombar { bottom: 0; }
+
+/* ---------- Coins ---------- */
+.coin-icon { position: relative; flex: none; border-radius: 50%; overflow: hidden; display: grid; place-items: center; background: #232838; color: var(--muted); font-weight: 700; font-family: var(--font-display); }
+.coin-icon > span { font-size: 17px; }
+.coin-icon img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; background: #232838; }
+.coin-right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; font-variant-numeric: tabular-nums; }
+.coin-right .price { font-weight: 600; white-space: nowrap; }
+.chg { font-size: 13px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.chg.pos { color: var(--positive); }
+.chg.neg { color: var(--danger); }
+.coins-hero .coins-cash { margin: 12px 0 6px; color: var(--muted); font-size: 14px; }
+.coins-hero .coins-cash b { color: var(--text); font-variant-numeric: tabular-nums; }
+.coins-hero.plain .hero-value { color: var(--text); }
+.hero-delta.static { cursor: default; }
+.coin-search { margin-top: 2px; }
+.coin-skeleton { height: 70px; border-radius: 20px; background: linear-gradient(90deg, #12161E 0%, #1A1F2B 50%, #12161E 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; margin-bottom: 8px; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+.coin-head { display: flex; align-items: center; gap: 12px; }
+.coin-head .main { min-width: 0; }
+.coin-price { font-family: var(--font-display); font-weight: 700; font-size: 32px; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.coin-sub { margin-top: 2px; font-size: 14px; display: flex; gap: 8px; align-items: baseline; }
+.coin-chart { position: relative; height: 210px; margin: 14px -20px 0; touch-action: pan-y; cursor: crosshair; }
+.coin-chart svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.coin-chart-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; text-align: center; padding: 0 24px; }
+.coin-cursor { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed rgba(232, 234, 240, 0.35); opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+.coin-cursor.on { opacity: 1; }
+.mini-spin { width: 26px; height: 26px; border-radius: 50%; border: 2.5px solid #2A3142; border-top-color: var(--muted); animation: spin360 0.8s linear infinite; }
+@keyframes spin360 { to { transform: rotate(360deg); } }
+.coin-controls { display: flex; gap: 10px; margin-top: 10px !important; }
+.seg.seg-small { margin-top: 0; flex: 1; padding: 3px; border-radius: 12px; }
+.seg.seg-small button { min-height: 38px; font-size: 14px; border-radius: 9px; }
+.seg.seg-small button[aria-pressed="true"] { background: var(--card-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+.seg.seg-icons { flex: 0 0 auto; grid-auto-columns: 48px; }
+.seg.seg-icons button { display: grid; place-items: center; }
+.coin-position, .trade-preview { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px; border-radius: 16px; background: var(--card); border: 1px solid var(--border); }
+.coin-position strong, .trade-preview strong { display: block; font-family: var(--font-display); font-size: 18px; font-variant-numeric: tabular-nums; margin-top: 2px; overflow-wrap: anywhere; }
+.trade-preview .full { grid-column: 1 / -1; font-size: 13px; }
+.trade-preview:empty { display: none; }
+.coin-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.chip.on { background: var(--pill-on); color: var(--pill-on-text); border-color: transparent; }
+.btn[disabled] { opacity: 0.45; pointer-events: none; }
+.hero-delta.static { display: inline-block; }

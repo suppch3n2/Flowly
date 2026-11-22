@@ -13,6 +13,7 @@ export const EXPENSE_CATEGORIES = [
   { id: 'abos', label: 'Abos', color: '#F472B6', icon: 'repeat' },
   { id: 'shopping', label: 'Shopping', color: '#FBBF24', icon: 'bag' },
   { id: 'gesundheit', label: 'Gesundheit', color: '#F87171', icon: 'heart' },
+  { id: 'krypto', label: 'Krypto', color: '#C084FC', icon: 'coin' },
   { id: 'sonstiges', label: 'Sonstiges', color: '#94A3B8', icon: 'dots' },
 ];
 
@@ -20,11 +21,12 @@ export const INCOME_CATEGORIES = [
   { id: 'gehalt', label: 'Gehalt', color: '#5BC0EB', icon: 'briefcase' },
   { id: 'nebenjob', label: 'Nebenjob', color: '#8B7CF6', icon: 'laptop' },
   { id: 'geschenk', label: 'Geschenk', color: '#F472B6', icon: 'gift' },
+  { id: 'krypto', label: 'Krypto', color: '#C084FC', icon: 'coin' },
   { id: 'sonstiges', label: 'Sonstiges', color: '#94A3B8', icon: 'dots' },
 ];
 
 export const MAX_CENTS = 99_999_999_999; // 999.999.999,99 €
-export const SOURCES = ['manual', 'applepay', 'bank', 'recurring'];
+export const SOURCES = ['manual', 'applepay', 'bank', 'recurring', 'crypto'];
 export const INTERVAL_IDS = ['once', 'weekly', 'monthly', 'quarterly', 'yearly'];
 const MAX_SEEN = 20000;
 
@@ -42,6 +44,7 @@ export function getCategory(type, id) {
 }
 
 import { merchantKey } from './categorize.js';
+import { createCryptoState, sanitizeCrypto } from './crypto.js';
 
 /* ---------- Escaping ---------- */
 
@@ -406,7 +409,7 @@ export function uid() {
 export function createEmptyState() {
   return {
     version: 2,
-    settings: { name: '', startBalance: 0, monthlyLimit: 0, limitStep: 0, limitStart: '', hideImport: false },
+    settings: { name: '', startBalance: 0, monthlyLimit: 0, limitStep: 0, limitStart: '', hideImport: false, coinsOnline: true },
     transactions: [],
     budgets: {},
     goals: [],
@@ -414,6 +417,7 @@ export function createEmptyState() {
     learned: {},
     importInfo: { lastImportAt: 0, seen: [] },
     dismissedSuggestions: [],
+    crypto: createCryptoState(),
   };
 }
 
@@ -445,6 +449,7 @@ export function sanitizeData(raw) {
   out.settings.startBalance = isCents(s.startBalance) ? s.startBalance : 0;
   out.settings.monthlyLimit = isCents(s.monthlyLimit) && s.monthlyLimit > 0 ? s.monthlyLimit : 0;
   out.settings.hideImport = s.hideImport === true;
+  out.settings.coinsOnline = s.coinsOnline !== false;
   out.settings.limitStep = isCents(s.limitStep) ? s.limitStep : 0;
   out.settings.limitStart = typeof s.limitStart === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s.limitStart) ? s.limitStart : '';
 
@@ -532,6 +537,7 @@ export function sanitizeData(raw) {
     out.importInfo.lastImportAt = Number.isFinite(info.lastImportAt) && info.lastImportAt > 0 ? info.lastImportAt : 0;
     if (Array.isArray(info.seen)) out.importInfo.seen = info.seen.filter((x) => typeof x === 'string' && x.length <= 160).slice(-MAX_SEEN);
   }
+  out.crypto = sanitizeCrypto(raw.crypto);
   if (Array.isArray(raw.dismissedSuggestions)) {
     out.dismissedSuggestions = raw.dismissedSuggestions.filter((x) => typeof x === 'string' && x.length <= 80).slice(-500);
   }
