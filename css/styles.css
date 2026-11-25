@@ -1081,3 +1081,4 @@ html { height: 100%; }
 .coin-head .fav-btn[aria-pressed="true"] { color: #F472B6; }
 .coin-head .fav-btn[aria-pressed="true"] .ico { fill: currentColor; }
 .coin-svg { position: absolute; inset: 0; }
+.views.bouncing { transition: none; }

@@ -36,6 +36,7 @@ const state = {
   scroll: {},
 };
 const canStore = storageAvailable();
+let noBounceUntil = 0; // nach Programm-Sprüngen (Tabwechsel) kein Abprallen
 
 /* ---------- Speichern ---------- */
 
@@ -143,6 +144,7 @@ function switchTab(id) {
   lastTabIndex = TABS.findIndex((t) => t.id === state.tab);
   state.tab = id;
   saveUi({ ...ui, tab: id });
+  noBounceUntil = performance.now() + 400;
   render();
   window.scrollTo(0, state.scroll[id] || 0);
   if (typeof syncLive === 'function') syncLive();
@@ -3241,6 +3243,67 @@ async function refreshApp() {
   $('#ptr-status').textContent = 'Aktualisiert';
   ptrBusy = false;
 }
+
+/* ---------- Abprallen oben (Federphysik wie iOS) ---------- */
+const bounce = { samples: [], touching: false, raf: 0 };
+const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+
+function stopBounce() {
+  cancelAnimationFrame(bounce.raf);
+  bounce.raf = 0;
+  viewsEl.classList.remove('bouncing');
+  if (!ptrBusy && ptrStart == null) ptrMove(0);
+}
+
+/** Inhalt schwingt mit der Aufprall-Geschwindigkeit weiter und federt zurück (kritisch gedämpft, kein Nachwippen). */
+function startBounce(speed) {
+  const k = 150; // Federhärte (weich wie iOS)
+  const c = 2 * Math.sqrt(k); // kritische Dämpfung
+  let x = 0;
+  let v = speed * 1000; // px/s
+  let last = performance.now();
+  viewsEl.classList.add('bouncing');
+  const step = (t) => {
+    const dt = Math.min(0.034, (t - last) / 1000);
+    last = t;
+    for (let i = 0; i < 4; i++) {
+      const h = dt / 4;
+      v += (-k * x - c * v) * h;
+      x += v * h;
+    }
+    if (x < 0) x = 0;
+    ptrMove(x);
+    if (x < 0.25 && v <= 0) {
+      stopBounce();
+      return;
+    }
+    bounce.raf = requestAnimationFrame(step);
+  };
+  bounce.raf = requestAnimationFrame(step);
+}
+
+document.addEventListener('touchstart', () => {
+  bounce.touching = true;
+  if (bounce.raf) stopBounce();
+}, { passive: true });
+document.addEventListener('touchend', () => (bounce.touching = false), { passive: true });
+document.addEventListener('touchcancel', () => (bounce.touching = false), { passive: true });
+
+window.addEventListener('scroll', () => {
+  const now = performance.now();
+  const y = window.scrollY;
+  bounce.samples.push([now, y]);
+  while (bounce.samples.length && now - bounce.samples[0][0] > 120) bounce.samples.shift();
+  if (y > 0 || bounce.raf || bounce.touching || ptrBusy || ptrStart != null || now < noBounceUntil) return;
+  if (reducedMotion?.matches || document.body.classList.contains('locked') || document.body.classList.contains('is-locked')) return;
+  // Geschwindigkeit der letzten Bewegung vor dem Aufprall
+  const prev = bounce.samples.find((p) => p[1] > 0 && now - p[0] <= 80 && now - p[0] >= 8);
+  if (!prev) return;
+  const dt = now - prev[0];
+  const speed = (prev[1] - y) / dt; // px/ms
+  if (speed < 0.35) return;
+  startBounce(Math.min(speed, 4.5));
+}, { passive: true });
 
 /* ---------- Service Worker & Updates ---------- */
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
