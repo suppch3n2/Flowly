@@ -409,7 +409,7 @@ export function uid() {
 export function createEmptyState() {
   return {
     version: 2,
-    settings: { name: '', startBalance: 0, monthlyLimit: 0, limitStep: 0, limitStart: '', hideImport: false, coinsOnline: true },
+    settings: { name: '', startBalance: 0, monthlyLimit: 0, limitStep: 0, limitStart: '', hideImport: false, coinsOnline: true, liveOnline: true },
     transactions: [],
     budgets: {},
     goals: [],
@@ -450,6 +450,7 @@ export function sanitizeData(raw) {
   out.settings.monthlyLimit = isCents(s.monthlyLimit) && s.monthlyLimit > 0 ? s.monthlyLimit : 0;
   out.settings.hideImport = s.hideImport === true;
   out.settings.coinsOnline = s.coinsOnline !== false;
+  out.settings.liveOnline = s.liveOnline !== false;
   out.settings.limitStep = isCents(s.limitStep) ? s.limitStep : 0;
   out.settings.limitStart = typeof s.limitStart === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s.limitStart) ? s.limitStart : '';
 

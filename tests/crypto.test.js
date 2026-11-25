@@ -120,8 +120,41 @@ test('CoinGecko-Antworten werden sauber übernommen', () => {
   ]);
   assert.equal(m.length, 1);
   assert.deepEqual([m[0].symbol, m[0].price, m[0].change24h, m[0].rank], ['BTC', 81234.5, 1.23, 1]);
-  assert.deepEqual(C.normalizeSimplePrices({ bitcoin: { eur: 1, eur_24h_change: -2 }, bad: {} }), { bitcoin: { price: 1, change24h: -2 } });
+  assert.deepEqual(C.normalizeSimplePrices({ bitcoin: { eur: 1, eur_24h_change: -2, eur_market_cap: 5e9 }, bad: {} }), { bitcoin: { price: 1, change24h: -2, marketCap: 5e9 } });
   assert.deepEqual(C.normalizeLine({ prices: [[1, 2], [3, 4], ['x', 1]] }), [{ t: 1, v: 2 }, { t: 3, v: 4 }]);
   assert.deepEqual(C.normalizeOhlc([[1, 2, 3, 1, 2.5], [2, 'x']]), [{ t: 1, o: 2, h: 3, l: 1, c: 2.5 }]);
   assert.equal(C.normalizeSearch({ coins: [{ id: 'solana', symbol: 'SOL', name: 'Solana', large: 'https://coin-images.coingecko.com/coins/images/4128/large/solana.png', market_cap_rank: 5 }] })[0].rank, 5);
+});
+
+test('Sortierung wie Phantom: Trending, Majors, Gewinner, Verlierer, Favoriten', () => {
+  const markets = [
+    { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', price: 50000, change24h: 1, rank: 1 },
+    { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', price: 3000, change24h: -4, rank: 2 },
+    { id: 'solana', symbol: 'SOL', name: 'Solana', price: 130, change24h: 9, rank: 5 },
+    { id: 'dead', symbol: 'DEAD', name: 'Dead', price: 1, change24h: null, rank: 9 },
+  ];
+  const trending = C.normalizeTrending({ coins: [{ item: { id: 'basket', symbol: 'basket', name: 'BASKET', market_cap_rank: null, large: 'https://coin-images.coingecko.com/coins/images/1/large/x.png', data: { price_change_percentage_24h: { eur: 451.6 } } } }, { item: { id: 'solana', symbol: 'sol', name: 'Solana', market_cap_rank: 5 } }, { item: { id: 'bad id' } }] });
+  assert.deepEqual(trending.map((t) => [t.id, t.trendRank]), [['basket', 1], ['solana', 2]]);
+  assert.equal(trending[0].change24h, 451.6);
+  const live = { solana: { price: 131, change24h: 12 } };
+  const priceOf = (id) => live[id] || null;
+  const opts = { markets, trending, favorites: [{ id: 'ethereum', symbol: 'ETH', name: 'Ethereum', image: '' }], priceOf };
+  assert.deepEqual(C.sortForTab('majors', opts).map((c) => c.id), ['bitcoin', 'ethereum', 'solana', 'dead']);
+  assert.deepEqual(C.sortForTab('gainers', opts).map((c) => c.id), ['solana', 'bitcoin', 'ethereum']);
+  assert.deepEqual(C.sortForTab('losers', opts).map((c) => c.id), ['ethereum', 'bitcoin', 'solana']);
+  assert.deepEqual(C.sortForTab('trending', opts).map((c) => c.id), ['basket', 'solana']);
+  assert.equal(C.sortForTab('trending', opts)[1].price, 131); // Live-Kurs hat Vorrang
+  const fav = C.sortForTab('favorites', opts);
+  assert.deepEqual([fav[0].id, fav[0].price, fav[0].rank], ['ethereum', 3000, 2]);
+});
+
+test('Marktkapitalisierung kurz und Favoriten werden gespeichert/geprüft', () => {
+  assert.equal(C.formatCompactEur(1.7e6), '1,7\u00A0Mio.\u00A0€');
+  assert.equal(C.formatCompactEur(657000), '657\u00A0Tsd.\u00A0€');
+  assert.equal(C.formatCompactEur(2.25e9), '2,3\u00A0Mrd.\u00A0€');
+  assert.equal(C.formatCompactEur(0), '');
+  const c = C.sanitizeCrypto({ listTab: 'gainers', favorites: [{ id: 'bitcoin', symbol: 'btc', name: 'Bitcoin', image: 'https://evil.example/a.png' }, { id: 'bitcoin' }, { id: 'x y' }] });
+  assert.equal(c.listTab, 'gainers');
+  assert.deepEqual(c.favorites, [{ id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', image: '' }]);
+  assert.equal(C.sanitizeCrypto({ listTab: 'hack' }).listTab, 'trending');
 });

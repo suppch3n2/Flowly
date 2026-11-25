@@ -8,7 +8,7 @@ Finanz-App als Progressive Web App, optimiert fürs iPhone. Reines HTML, CSS und
 
 - **Aufbau:** oben Reiter als Pillen (Start · Zahlen · Budgets · Ziele · Einstellungen), auf Start der Kontostand groß mit Rest vom Ausgaben-Limit (+ grün / − rot) und die letzten Umsätze, unten Suche und Plus
 
-- **Coins:** echte Kurse aller Coins (CoinGecko), Suche, Chart als Linie oder Kerzen (1T/1W/1M/1J), Kaufen/Verkaufen mit Spielgeld aus dem Flowly-Kontostand (in Euro, nach Menge oder alles); jeder Trade erscheint als Umsatz
+- **Coins:** echte Kurse aller Coins (CoinGecko) mit Live-Kursen jede Sekunde (Binance), sortiert wie bei Phantom (Favoriten, Trending, Majors, Gewinner, Verlierer), Suche, Chart als Linie oder Kerzen (1T/1W/1M/1J), Kaufen/Verkaufen mit Spielgeld aus dem Flowly-Kontostand (in Euro, nach Menge oder alles); jeder Trade erscheint als Umsatz
 - **Zahlen:** Einnahmen/Ausgaben/Sparquote, Limit, Balkendiagramm der letzten 6 Monate, Ringdiagramm nach Kategorie, alle Umsätze nach Datum mit Filter; Suche über die Leiste unten
 - **Budgets:** Monatslimit pro Kategorie, Warnfarbe ab 90 % und über 100 %
 - **Sparziele:** anlegen, Geld hinzufügen, löschen
@@ -26,7 +26,7 @@ Finanz-App als Progressive Web App, optimiert fürs iPhone. Reines HTML, CSS und
 
 - **Alle Daten bleiben auf dem Gerät** (localStorage im Browser). Es gibt keinen Server, kein Konto, keine Synchronisation.
 - **Kein Tracking, keine Analytics, keine Cookies.** Auch die Schriften sind lokal eingebunden.
-- **Einzige externe Verbindung:** Der Bereich „Coins“ lädt öffentliche Kurse und Coin-Bilder von CoinGecko (`api.coingecko.com`, `coin-images.coingecko.com`). Gesendet werden dabei nur die abgefragten Coin-Namen – keine Buchungen, kein Depot, keine Kennung, kein Cookie. Abschaltbar in den Einstellungen.
+- **Einzige externe Verbindungen:** Der Bereich „Coins“ lädt öffentliche Kurse und Coin-Bilder von CoinGecko (`api.coingecko.com`, `coin-images.coingecko.com`) und Live-Kurse vom öffentlichen Marktdaten-Stream von Binance (`data-api.binance.vision`, `data-stream.binance.vision`). Gesendet werden dabei nur die abgefragten Coin-Namen – keine Buchungen, kein Depot, keine Kennung, kein Cookie. Die Live-Verbindung besteht nur, solange „Coins“ offen ist. Beides abschaltbar in den Einstellungen.
 - Eine **Content-Security-Policy** in `index.html` erlaubt technisch nur diese eine Ausnahme und verbietet alle anderen fremden Verbindungen.
 - **Backups** werden nur als Datei auf dem Gerät gespeichert (Download), nie hochgeladen. `.gitignore` verhindert, dass Backup-Dateien versehentlich ins Repository gelangen.
 - **Importierte Dateien** (Apple-Pay-Datei, Kontoauszug) werden nur lokal gelesen. Empfohlener Ablageort: „Auf meinem iPhone“ statt iCloud Drive, damit nichts synchronisiert wird.

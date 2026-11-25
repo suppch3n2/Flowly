@@ -145,6 +145,7 @@ function switchTab(id) {
   saveUi({ ...ui, tab: id });
   render();
   window.scrollTo(0, state.scroll[id] || 0);
+  if (typeof syncLive === 'function') syncLive();
 }
 
 /* ---------- Start ---------- */
@@ -445,18 +446,63 @@ function renderTxResults() {
     .join('') + (groups.length > shown.length ? `<p class="settings-note">Ältere Buchungen: bitte die Suche verwenden.</p>` : '');
 }
 
-/* ---------- Coins (Spielgeld, echte Kurse von CoinGecko) ---------- */
+/* ---------- Coins (Spielgeld; Kurse von CoinGecko + Live-Kurse von Binance) ---------- */
 
 const coins = {
   markets: Market.cachedMarkets(),
-  prices: {},
+  trending: Market.cachedTrending(),
+  prices: {}, // CoinGecko-Preise (Fallback für Coins ohne Binance-Listing)
+  meta: new Map(), // id -> {id, symbol, name, image, rank, marketCap}
+  links: new Map(), // id -> Binance-Symbol (geprüft)
   loading: false,
-  error: '',
   query: '',
   results: null,
   searching: false,
+  searchRetry: 0,
 };
-for (const c of coins.markets.list) coins.prices[c.id] = { price: c.price, change24h: c.change24h };
+
+function remember(list) {
+  for (const c of list || []) {
+    const old = coins.meta.get(c.id) || {};
+    coins.meta.set(c.id, {
+      ...old,
+      id: c.id,
+      symbol: c.symbol || old.symbol,
+      name: c.name || old.name,
+      image: c.image || old.image || '',
+      rank: c.rank ?? old.rank ?? null,
+      marketCap: c.marketCap ?? old.marketCap ?? null,
+    });
+    if (c.price != null) coins.prices[c.id] = { price: c.price, change24h: c.change24h ?? null, marketCap: c.marketCap ?? null };
+  }
+}
+remember(coins.markets.list);
+remember(coins.trending.list);
+
+/** Binance-Symbol verknüpfen – nur wenn der Kurs zu CoinGecko passt (verhindert Verwechslungen gleicher Kürzel). */
+function linkFor(id) {
+  if (coins.links.has(id)) return coins.links.get(id);
+  if (!state.data.settings.liveOnline || !Market.liveAvailable()) return null;
+  const m = coins.meta.get(id);
+  if (!m?.symbol) return null;
+  const l = Market.liveEur(m.symbol);
+  if (!l) return null;
+  const ref = coins.prices[id]?.price;
+  const ok = ref ? Math.abs(l.price / ref - 1) < 0.08 : m.rank != null && m.rank <= 150;
+  if (ok) coins.links.set(id, m.symbol);
+  return ok ? m.symbol : null;
+}
+
+/** Aktueller Kurs: live von Binance, sonst CoinGecko. */
+function priceOf(id) {
+  const sym = linkFor(id);
+  if (sym) {
+    const l = Market.liveEur(sym);
+    if (l) return { ...l, live: true };
+  }
+  const p = coins.prices[id];
+  return p ? { price: p.price, change24h: p.change24h, live: false } : null;
+}
 
 function cashCents() {
   const { transactions, settings } = state.data;
@@ -464,19 +510,19 @@ function cashCents() {
 }
 
 function coinById(id) {
-  const m = coins.markets.list.find((c) => c.id === id);
-  if (m) return m;
   const h = state.data.crypto.holdings[id];
-  const r = (coins.results || []).find((c) => c.id === id);
-  const base = r || (h ? { id, symbol: h.symbol, name: h.name, image: h.image } : null);
-  if (!base) return null;
-  return { ...base, price: coins.prices[id]?.price ?? null, change24h: coins.prices[id]?.change24h ?? null };
+  const fav = state.data.crypto.favorites.find((f) => f.id === id);
+  const m = coins.meta.get(id) || (h ? { id, symbol: h.symbol, name: h.name, image: h.image } : fav || null);
+  if (!m) return null;
+  const p = priceOf(id);
+  return { ...m, price: p?.price ?? null, change24h: p?.change24h ?? null };
 }
 
-function coinIcon(c, size = 44) {
+function coinIcon(c, size = 44, badge = null) {
   const letter = esc((c.symbol || c.name || '?')[0] || '?');
   const img = c.image ? `<img src="${esc(c.image)}" alt="" width="${size}" height="${size}" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : '';
-  return `<span class="coin-icon" style="width:${size}px;height:${size}px"><span>${letter}</span>${img}</span>`;
+  const b = badge ? `<i class="rank-badge r${badge}">${badge}</i>` : '';
+  return `<span class="coin-icon-wrap" style="width:${size}px;height:${size}px"><span class="coin-icon" style="width:${size}px;height:${size}px"><span>${letter}</span>${img}</span>${b}</span>`;
 }
 
 function changeHtml(pct) {
@@ -485,38 +531,146 @@ function changeHtml(pct) {
 }
 
 function holdingRow(h) {
-  return `<li><button type="button" class="row tile coin-row" data-action="coin" data-id="${esc(h.id)}">
-    ${coinIcon(h)}
+  return `<li><button type="button" class="row coin-row flat" data-action="coin" data-id="${esc(h.id)}" data-hid="${esc(h.id)}">
+    ${coinIcon(h, 48)}
     <span class="main"><span class="title">${esc(h.name)}</span><span class="sub">${esc(Crypto.formatQty(h.qty))} ${esc(h.symbol)}</span></span>
-    <span class="coin-right"><span class="price">${h.valueCents != null ? money(h.valueCents) : '–'}</span>${h.pnlCents != null ? `<span class="chg ${h.pnlCents < 0 ? 'neg' : 'pos'}">${money(h.pnlCents, { signed: true })}</span>` : ''}</span>
+    <span class="coin-right"><span class="price h-value">${h.valueCents != null ? money(h.valueCents) : '–'}</span><span class="chg h-pnl ${h.pnlCents < 0 ? 'neg' : 'pos'}">${h.pnlCents != null ? money(h.pnlCents, { signed: true }) : ''}</span></span>
   </button></li>`;
 }
 
-function coinRow(c, extra = '') {
-  return `<li><button type="button" class="row tile coin-row" data-action="coin" data-id="${esc(c.id)}">
-    ${coinIcon(c)}
-    <span class="main"><span class="title">${esc(c.name)}</span><span class="sub">${extra || esc(c.symbol)}</span></span>
-    <span class="coin-right"><span class="price">${c.price != null ? esc(Crypto.formatPrice(c.price)) : '–'}</span>${changeHtml(c.change24h)}</span>
+function coinRow(c, badge = null) {
+  const mc = Crypto.formatCompactEur(c.marketCap ?? coins.meta.get(c.id)?.marketCap ?? coins.prices[c.id]?.marketCap);
+  return `<li><button type="button" class="row coin-row flat" data-action="coin" data-id="${esc(c.id)}" data-lid="${esc(c.id)}">
+    ${coinIcon(c, 48, badge)}
+    <span class="main"><span class="title">${esc(c.name)}</span><span class="sub">${mc ? `${esc(mc)} MK` : esc(c.symbol)}</span></span>
+    <span class="coin-right"><span class="price l-price">${c.price != null ? esc(Crypto.formatPrice(c.price)) : '–'}</span><span class="l-chg">${changeHtml(c.change24h)}</span></span>
   </button></li>`;
 }
+
+/* Laden (still: keine Fehlermeldungen – bei Überlastung werden die letzten Kurse gezeigt) */
 
 async function loadMarkets(force = false) {
   if (!state.data.settings.coinsOnline || coins.loading) return;
-  const fresh = Date.now() - (coins.markets.t || 0) < 60_000;
-  if (fresh && !force) return;
+  const age = Date.now() - (coins.markets.t || 0);
+  const tAge = Date.now() - (coins.trending.t || 0);
+  if (!force && age < 150_000 && tAge < 240_000) return;
   coins.loading = true;
-  coins.error = '';
   try {
-    coins.markets = await Market.fetchMarkets({ force });
-    for (const c of coins.markets.list) coins.prices[c.id] = { price: c.price, change24h: c.change24h };
-    const missing = Object.keys(state.data.crypto.holdings).filter((id) => !coins.markets.list.some((c) => c.id === id));
-    if (missing.length) Object.assign(coins.prices, await Market.fetchPrices(missing, { force }));
-  } catch (err) {
-    coins.error = err?.message || 'Kurse konnten nicht geladen werden.';
+    if (force || age >= 150_000) {
+      try {
+        coins.markets = await Market.fetchMarkets();
+        remember(coins.markets.list);
+        coins.links.clear();
+      } catch {
+        /* still – später nochmal */
+      }
+    }
+    if (force || tAge >= 240_000) {
+      try {
+        coins.trending = await Market.fetchTrending();
+        remember(coins.trending.list);
+        const ids = coins.trending.list.map((c) => c.id);
+        if (ids.length && Market.cgReady()) {
+          const p = await Market.fetchPrices(ids, { maxAgeMs: 240_000 });
+          for (const [id, v] of Object.entries(p)) {
+            coins.prices[id] = v;
+            const m = coins.meta.get(id);
+            if (m && v.marketCap) m.marketCap = v.marketCap;
+          }
+        }
+      } catch {
+        /* still */
+      }
+    }
+    // Bestände/Favoriten ohne Binance-Kurs: Preis bei CoinGecko holen
+    const need = [...Object.keys(state.data.crypto.holdings), ...state.data.crypto.favorites.map((f) => f.id)].filter((id) => !linkFor(id) && !coins.markets.list.some((m) => m.id === id));
+    if (need.length && Market.cgReady()) {
+      try {
+        Object.assign(coins.prices, await Market.fetchPrices(need, { maxAgeMs: 90_000 }));
+      } catch {
+        /* still */
+      }
+    }
   } finally {
     coins.loading = false;
   }
   if (state.tab === 'coins') renderCoinsBody();
+}
+
+/* Live-Verbindung nur, solange Coins sichtbar sind */
+let unTick = null;
+function wantLive() {
+  return (
+    document.visibilityState === 'visible' &&
+    state.data.settings.coinsOnline &&
+    state.data.settings.liveOnline &&
+    !document.body.classList.contains('is-locked') &&
+    (state.tab === 'coins' || !!document.querySelector('.coin-sheet'))
+  );
+}
+function syncLive() {
+  if (wantLive()) {
+    Market.startLive();
+    if (!unTick) unTick = Market.onTick(onLiveTick);
+  } else {
+    Market.stopLive();
+    unTick?.();
+    unTick = null;
+  }
+  if (state.data.settings.coinsOnline && (state.tab === 'coins' || document.querySelector('.coin-sheet')) && document.visibilityState === 'visible') loadMarkets(false);
+}
+setInterval(syncLive, 5000);
+document.addEventListener('visibilitychange', syncLive);
+
+/** Jede Sekunde: sichtbare Kurse, Depot und Bestände aktualisieren (ohne neu zu zeichnen). */
+function onLiveTick() {
+  const body = $('#coins-body');
+  if (body && state.tab === 'coins') {
+    body.querySelectorAll('[data-lid]').forEach((row) => {
+      const p = priceOf(row.dataset.lid);
+      if (!p?.live) return;
+      const priceEl = row.querySelector('.l-price');
+      const txt = Crypto.formatPrice(p.price);
+      if (priceEl.textContent !== txt) {
+        const up = p.price >= (Number(priceEl.dataset.v) || p.price);
+        priceEl.textContent = txt;
+        priceEl.classList.remove('tick-up', 'tick-down');
+        void priceEl.offsetWidth;
+        priceEl.classList.add(up ? 'tick-up' : 'tick-down');
+      }
+      priceEl.dataset.v = p.price;
+      row.querySelector('.l-chg').innerHTML = changeHtml(p.change24h);
+    });
+    const sum = Crypto.portfolioSummary(state.data.crypto, livePriceMap());
+    if (sum.rows.length) {
+      const hv = $('#depot-value', body);
+      if (hv) hv.textContent = money(sum.valueCents);
+      const hd = $('#depot-delta', body);
+      if (hd) hd.textContent = money(sum.pnlCents, { signed: true });
+      const hero = $('.coins-hero', body);
+      hero?.classList.toggle('neg', sum.pnlCents < 0);
+      hero?.classList.toggle('pos', sum.pnlCents >= 0);
+      for (const r of sum.rows) {
+        const row = body.querySelector(`[data-hid="${CSS.escape(r.id)}"]`);
+        if (!row) continue;
+        row.querySelector('.h-value').textContent = r.valueCents != null ? money(r.valueCents) : '–';
+        const pnl = row.querySelector('.h-pnl');
+        pnl.textContent = r.pnlCents != null ? money(r.pnlCents, { signed: true }) : '';
+        pnl.className = `chg h-pnl ${r.pnlCents < 0 ? 'neg' : 'pos'}`;
+      }
+    }
+  }
+  liveSheetHooks.forEach((fn) => fn());
+}
+const liveSheetHooks = new Set();
+
+function livePriceMap() {
+  const out = {};
+  for (const id of Object.keys(state.data.crypto.holdings)) {
+    const p = priceOf(id);
+    if (p) out[id] = p;
+  }
+  return out;
 }
 
 function renderCoins() {
@@ -524,69 +678,79 @@ function renderCoins() {
     return emptyState({
       title: 'Coin-Kurse sind ausgeschaltet',
       art: 'coin',
-      text: 'Für echte Kurse lädt Flowly öffentliche Kursdaten von CoinGecko. Es werden keine deiner Daten übertragen.',
+      text: 'Für echte Kurse lädt Flowly öffentliche Kursdaten von CoinGecko und Binance. Es werden keine deiner Daten übertragen.',
       actions: `<button type="button" class="btn primary block" data-action="coins-on">${icon('coin', 20)}Kurse einschalten</button>`,
     });
   }
-  return `<div class="stack">
-    <div id="coins-body">${coinsBodyHtml()}</div>
-  </div>`;
+  return `<div class="stack"><div id="coins-body">${coinsBodyHtml()}</div></div>`;
+}
+
+function listHtml() {
+  const q = coins.query.trim();
+  const tab = state.data.crypto.listTab || 'trending';
+  let items;
+  if (q.length >= 2) {
+    items = (coins.results || []).map((c) => ({ ...c, ...(priceOf(c.id) || {}) }));
+    if (!items.length) return coins.searching ? '<div class="coin-skeleton"></div><div class="coin-skeleton"></div>' : '<p class="settings-note">Kein Coin gefunden.</p>';
+  } else {
+    items = Crypto.sortForTab(tab, {
+      markets: coins.markets.list,
+      trending: coins.trending.list,
+      favorites: state.data.crypto.favorites,
+      priceOf,
+    });
+    if (!items.length) {
+      if (tab === 'favorites') return '<p class="settings-note">Noch keine Favoriten – tippe bei einem Coin auf das Herz.</p>';
+      return '<div class="coin-skeleton"></div><div class="coin-skeleton"></div><div class="coin-skeleton"></div><div class="coin-skeleton"></div>';
+    }
+  }
+  return `<ul class="tx-list coin-list">${items.map((c, i) => coinRow(c, q.length < 2 && tab === 'trending' && i < 3 ? i + 1 : null)).join('')}</ul>`;
 }
 
 function coinsBodyHtml() {
   const crypto = state.data.crypto;
-  const sum = Crypto.portfolioSummary(crypto, coins.prices);
+  const sum = Crypto.portfolioSummary(crypto, livePriceMap());
   const cash = cashCents();
-  const pnlTone = sum.pnlCents < 0 ? 'neg' : 'pos';
-  const time = coins.markets.t ? new Date(coins.markets.t).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
-  const listItems = coins.query.trim().length >= 2 ? coins.results : coins.markets.list;
-  let list;
-  if (coins.query.trim().length >= 2 && coins.searching && !coins.results) list = '<p class="settings-note">Suche …</p>';
-  else if (!listItems || !listItems.length) {
-    list = coins.loading
-      ? '<div class="coin-skeleton"></div><div class="coin-skeleton"></div><div class="coin-skeleton"></div>'
-      : `<p class="settings-note">${coins.query.trim().length >= 2 ? 'Kein Coin gefunden.' : 'Noch keine Kurse geladen – zieh zum Aktualisieren nach unten.'}</p>`;
-  } else {
-    list = `<ul class="tx-list tiles">${listItems
-      .map((c) => {
-        const m = { ...c, price: coins.prices[c.id]?.price ?? c.price ?? null, change24h: coins.prices[c.id]?.change24h ?? c.change24h ?? null };
-        return coinRow(m, `${esc(m.symbol)}${m.rank ? ` · #${m.rank}` : ''}`);
-      })
-      .join('')}</ul>`;
-  }
+  const tab = crypto.listTab || 'trending';
   return `
-    <section class="hero coins-hero ${sum.rows.length ? pnlTone : 'plain'}">
+    <section class="hero coins-hero ${sum.rows.length ? (sum.pnlCents < 0 ? 'neg' : 'pos') : 'plain'}">
       <div class="hero-label">Dein Depot</div>
-      <div class="hero-value">${money(sum.valueCents)}</div>
-      ${sum.rows.length ? `<div class="hero-delta static">${money(sum.pnlCents, { signed: true })}</div>` : ''}
+      <div class="hero-value" id="depot-value">${money(sum.valueCents)}</div>
+      ${sum.rows.length ? `<div class="hero-delta static" id="depot-delta">${money(sum.pnlCents, { signed: true })}</div>` : ''}
       <div class="coins-cash">Verfügbar zum Kaufen: <b>${money(Math.max(0, cash))}</b></div>
     </section>
 
-    ${sum.rows.length
-      ? `<section><h3 class="section-link static">Deine Coins</h3><ul class="tx-list tiles">${sum.rows.map(holdingRow).join('')}</ul></section>`
-      : ''}
+    ${sum.rows.length ? `<section><h3 class="section-link static">Deine Coins</h3><ul class="tx-list coin-list">${sum.rows.map(holdingRow).join('')}</ul></section>` : ''}
 
     <section>
-      <h3 class="section-link static">Alle Coins</h3>
+      <h3 class="section-link static">Märkte erkunden</h3>
       <label class="search coin-search ${coins.query ? 'has-value' : ''}">
         ${icon('search', 20)}
         <span class="sr-only">Coins suchen</span>
         <input type="search" id="coin-search" placeholder="Coin suchen, z. B. Bitcoin, SOL" value="${esc(coins.query)}" autocomplete="off" enterkeyhint="search">
       </label>
-      ${coins.error ? `<div class="warning-note" style="margin-top:12px">${icon('alert', 18)}<span>${esc(coins.error)}${coins.markets.t ? ' Angezeigt werden die letzten bekannten Kurse.' : ''}</span></div>` : ''}
-      <div style="margin-top:12px">${list}</div>
-      <p class="settings-note">Kurse: CoinGecko${time ? ` · Stand ${esc(time)} Uhr` : ''} · Kaufen/Verkaufen mit Spielgeld – es fließt kein echtes Geld.</p>
+      <div class="chip-row" role="tablist" aria-label="Sortierung">
+        ${Crypto.LIST_TABS.map((t) =>
+          t.id === 'favorites'
+            ? `<button type="button" class="mchip icon" role="tab" data-action="coin-tab" data-tab="${t.id}" aria-selected="${tab === t.id}" aria-label="Favoriten">${icon('fav', 20)}</button>`
+            : `<button type="button" class="mchip" role="tab" data-action="coin-tab" data-tab="${t.id}" aria-selected="${tab === t.id}">${t.label}</button>`,
+        ).join('')}
+      </div>
+      <div id="coin-list">${listHtml()}</div>
+      <p class="settings-note">Kurse: Binance (live) &amp; CoinGecko · Kaufen/Verkaufen mit Spielgeld – es fließt kein echtes Geld.</p>
     </section>`;
 }
 
 function renderCoinsBody() {
   const body = $('#coins-body');
-  if (!body) return render();
+  if (!body) return;
   const input = $('#coin-search', body);
   const focused = document.activeElement === input;
   const pos = input?.selectionStart;
+  const chipScroll = $('.chip-row', body)?.scrollLeft || 0;
   body.innerHTML = coinsBodyHtml();
   mountCoinSearch(body);
+  $('.chip-row', body).scrollLeft = chipScroll;
   if (focused) {
     const again = $('#coin-search', body);
     again.focus();
@@ -598,7 +762,47 @@ function renderCoinsBody() {
   }
 }
 
+function renderCoinList() {
+  const box = $('#coin-list');
+  if (box) box.innerHTML = listHtml();
+  else renderCoinsBody();
+}
+
 let coinSearchTimer;
+async function runCoinSearch(q) {
+  try {
+    const found = await Market.searchCoins(q);
+    if (coins.query.trim() !== q) return;
+    remember(found);
+    const local = coins.results || [];
+    coins.results = [...local, ...found.filter((f) => !local.some((l) => l.id === f.id))];
+    const ids = coins.results.filter((c) => !linkFor(c.id) && !coins.prices[c.id]).map((c) => c.id).slice(0, 25);
+    if (ids.length && Market.cgReady()) {
+      try {
+        const p = await Market.fetchPrices(ids, { maxAgeMs: 120_000 });
+        for (const [id, v] of Object.entries(p)) {
+          coins.prices[id] = v;
+          const m = coins.meta.get(id);
+          if (m && v.marketCap) m.marketCap = v.marketCap;
+        }
+      } catch {
+        /* still */
+      }
+    }
+    coins.results = coins.results.map((c) => ({ ...c, ...(coins.meta.get(c.id) || {}) }));
+    coins.searching = false;
+  } catch (err) {
+    if (err?.busy && coins.query.trim() === q) {
+      // Kurz warten und still erneut versuchen – keine Meldung
+      clearTimeout(coinSearchTimer);
+      coinSearchTimer = setTimeout(() => runCoinSearch(q), Math.max(1500, Market.cgWaitMs()));
+      return;
+    }
+    coins.searching = false;
+  }
+  renderCoinList();
+}
+
 function mountCoinSearch(root) {
   const input = $('#coin-search', root);
   if (!input) return;
@@ -610,28 +814,18 @@ function mountCoinSearch(root) {
     if (q.length < 2) {
       coins.results = null;
       coins.searching = false;
-      renderCoinsBody();
+      renderCoinList();
       return;
     }
-    // Erst lokal in den Top-Coins suchen, dann bei CoinGecko
+    // Sofort lokal in bekannten Coins suchen, dann (gebremst) bei CoinGecko
     const lq = q.toLowerCase();
-    coins.results = coins.markets.list.filter((c) => c.name.toLowerCase().includes(lq) || c.symbol.toLowerCase().includes(lq));
+    coins.results = [...coins.meta.values()]
+      .filter((c) => c.name?.toLowerCase().includes(lq) || c.symbol?.toLowerCase().includes(lq))
+      .sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9))
+      .slice(0, 40);
     coins.searching = true;
-    renderCoinsBody();
-    coinSearchTimer = setTimeout(async () => {
-      try {
-        const found = await Market.searchCoins(q);
-        if (coins.query.trim() !== q) return;
-        const ids = found.map((c) => c.id).filter((id) => !coins.prices[id]).slice(0, 25);
-        if (ids.length) Object.assign(coins.prices, await Market.fetchPrices(ids).catch(() => ({})));
-        const local = coins.results || [];
-        coins.results = [...local, ...found.filter((f) => !local.some((l) => l.id === f.id))];
-      } catch (err) {
-        coins.error = err?.message || '';
-      }
-      coins.searching = false;
-      renderCoinsBody();
-    }, 450);
+    renderCoinList();
+    coinSearchTimer = setTimeout(() => runCoinSearch(q), 700);
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') input.blur();
@@ -640,7 +834,16 @@ function mountCoinSearch(root) {
 
 function mountCoins(root) {
   mountCoinSearch(root);
-  loadMarkets(false);
+  syncLive();
+}
+
+function toggleFavorite(coin) {
+  const favs = state.data.crypto.favorites;
+  const i = favs.findIndex((f) => f.id === coin.id);
+  if (i >= 0) favs.splice(i, 1);
+  else favs.unshift({ id: coin.id, symbol: coin.symbol, name: coin.name, image: coin.image || '' });
+  saveState(state.data);
+  return i < 0;
 }
 
 /* Detailansicht eines Coins */
@@ -649,18 +852,19 @@ function openCoinSheet(id) {
   if (!coin) return;
   const pref = { range: '7', type: state.data.crypto.chart || 'line' };
   const holding = () => state.data.crypto.holdings[id];
-  const priceNow = () => coins.prices[id]?.price ?? coin.price ?? null;
-  const change = () => coins.prices[id]?.change24h ?? coin.change24h ?? null;
+  const isFav = () => state.data.crypto.favorites.some((f) => f.id === id);
 
   openSheet({
     title: coin.name,
     body: `
+      <div class="coin-sheet" data-coin="${esc(id)}"></div>
       <div class="coin-head">
-        ${coinIcon(coin, 40)}
-        <div class="main"><div class="coin-price" id="c-price">${esc(Crypto.formatPrice(priceNow()))}</div>
-          <div class="coin-sub" id="c-sub">${changeHtml(change())} <span class="muted">24 Std.</span></div></div>
+        ${coinIcon(coin, 44)}
+        <div class="main"><div class="coin-price" id="c-price">${esc(Crypto.formatPrice(coin.price))}</div>
+          <div class="coin-sub" id="c-sub">${changeHtml(coin.change24h)} <span class="muted">24 Std.</span></div></div>
+        <button type="button" class="icon-btn plain fav-btn" id="c-fav" aria-pressed="${isFav()}" aria-label="Favorit">${icon('fav', 24)}</button>
       </div>
-      <div class="coin-chart" id="c-chart"><div class="coin-chart-empty">Lade Chart …</div></div>
+      <div class="coin-chart" id="c-chart"><div class="coin-svg"><div class="coin-chart-empty"><span class="mini-spin"></span></div></div></div>
       <div class="coin-controls">
         <div class="seg seg-small" id="c-range" role="group" aria-label="Zeitraum">${Crypto.RANGES.map((r) => `<button type="button" data-range="${r.id}" aria-pressed="${r.id === pref.range}">${r.label}</button>`).join('')}</div>
         <div class="seg seg-small seg-icons" id="c-type" role="group" aria-label="Darstellung">
@@ -673,53 +877,112 @@ function openCoinSheet(id) {
         <button type="button" class="btn primary" id="c-buy">${icon('plus', 20)}Kaufen</button>
         <button type="button" class="btn" id="c-sell">${icon('arrowOut', 20)}Verkaufen</button>
       </div>
-      <p class="settings-note">Spielgeld – es fließt kein echtes Geld. Kurse: CoinGecko.</p>`,
-    onMount(sheet, close) {
+      <p class="settings-note" id="c-source">Spielgeld – es fließt kein echtes Geld.</p>`,
+    onMount(sheet) {
       const chartBox = $('#c-chart', sheet);
+      const svgBox = $('.coin-svg', chartBox);
+      const chart = { data: [], values: [], type: pref.type, source: '', scrubbing: false, lastDraw: 0 };
       let token = 0;
+      syncLive();
+
+      const head = () => {
+        if (chart.scrubbing) return;
+        const p = priceOf(id);
+        $('#c-price', sheet).textContent = Crypto.formatPrice(p?.price ?? coin.price);
+        $('#c-sub', sheet).innerHTML = `${changeHtml(p?.change24h ?? coin.change24h)} <span class="muted">24 Std.${p?.live ? ' · live' : ''}</span>`;
+      };
       const paintPosition = () => {
         const h = holding();
-        const p = priceNow();
+        const p = priceOf(id)?.price;
         $('#c-position', sheet).innerHTML = h
           ? `<div class="coin-position"><div><span class="eyebrow">Du hast</span><strong>${esc(Crypto.formatQty(h.qty))} ${esc(coin.symbol)}</strong></div>
              <div><span class="eyebrow">Wert</span><strong>${p != null ? money(Crypto.holdingValueCents(h.qty, p)) : '–'}</strong></div></div>`
           : '';
         $('#c-sell', sheet).disabled = !h;
       };
+      const draw = () => {
+        if (!chart.data.length) return;
+        const first = chart.values[0]?.v;
+        const last = chart.values[chart.values.length - 1]?.v;
+        const color = last != null && first != null && last < first ? '#F87171' : '#6EE7B7';
+        svgBox.innerHTML = chart.type === 'candles' ? coinCandleChart(chart.data) : coinLineChart(chart.data, color);
+        chart.lastDraw = Date.now();
+      };
       const loadChart = async () => {
         const my = ++token;
-        chartBox.innerHTML = '<div class="coin-chart-empty"><span class="mini-spin"></span></div>';
-        try {
-          const data = await Market.fetchChart(id, pref.range, pref.type);
-          if (my !== token) return;
-          const values = pref.type === 'candles' ? data.map((c) => ({ t: c.t, v: c.c })) : data;
-          const first = values[0]?.v;
-          const last = values[values.length - 1]?.v;
-          const color = last != null && first != null && last < first ? '#F87171' : '#6EE7B7';
-          chartBox.innerHTML = pref.type === 'candles' ? coinCandleChart(data) : coinLineChart(data, color);
-          const fmtTime = (t) =>
-            new Date(t).toLocaleString('de-DE', pref.range === '1' ? { hour: '2-digit', minute: '2-digit' } : { day: 'numeric', month: 'short', year: pref.range === '365' ? 'numeric' : undefined });
-          attachCoinScrub(
-            chartBox,
-            values,
-            (i) => {
-              if (i == null) {
-                $('#c-price', sheet).textContent = Crypto.formatPrice(priceNow());
-                $('#c-sub', sheet).innerHTML = `${changeHtml(change())} <span class="muted">24 Std.</span>`;
-                return;
-              }
-              const v = values[i];
-              const pct = first ? ((v.v - first) / first) * 100 : null;
-              $('#c-price', sheet).textContent = Crypto.formatPrice(v.v);
-              $('#c-sub', sheet).innerHTML = `${changeHtml(pct)} <span class="muted">${esc(fmtTime(v.t))}</span>`;
-            },
-            pref.type === 'candles',
-          );
-        } catch (err) {
-          if (my !== token) return;
-          chartBox.innerHTML = `<div class="coin-chart-empty">${esc(err?.message || 'Chart konnte nicht geladen werden.')}</div>`;
+        svgBox.innerHTML = '<div class="coin-chart-empty"><span class="mini-spin"></span></div>';
+        chart.data = [];
+        chart.values = [];
+        let tries = 0;
+        for (;;) {
+          try {
+            const res = await Market.fetchChart(id, pref.range, pref.type, linkFor(id));
+            if (my !== token) return;
+            chart.type = pref.type;
+            chart.source = res.source;
+            chart.data = res.data;
+            chart.values = pref.type === 'candles' ? res.data.map((c) => ({ t: c.t, v: c.c })) : res.data;
+            draw();
+            $('#c-source', sheet).textContent = `Spielgeld – es fließt kein echtes Geld. Chart: ${res.source === 'binance' ? 'Binance (live)' : 'CoinGecko'}.`;
+            return;
+          } catch (err) {
+            if (my !== token) return;
+            // Bei Überlastung still warten und erneut laden
+            if (err?.busy && tries++ < 6) {
+              await new Promise((r) => setTimeout(r, Math.max(2000, Market.cgWaitMs())));
+              if (my !== token || !sheet.isConnected) return;
+              continue;
+            }
+            svgBox.innerHTML = '<div class="coin-chart-empty">Chart gerade nicht verfügbar – zieh später nochmal.</div>';
+            return;
+          }
         }
       };
+      const fmtTime = (t) =>
+        new Date(t).toLocaleString('de-DE', pref.range === '1' ? { hour: '2-digit', minute: '2-digit' } : { day: 'numeric', month: 'short', year: pref.range === '365' ? 'numeric' : undefined });
+      attachCoinScrub(
+        chartBox,
+        () => chart.values,
+        (i) => {
+          if (i == null) {
+            chart.scrubbing = false;
+            head();
+            return;
+          }
+          chart.scrubbing = true;
+          const v = chart.values[i];
+          const first = chart.values[0]?.v;
+          const pct = first ? ((v.v - first) / first) * 100 : null;
+          $('#c-price', sheet).textContent = Crypto.formatPrice(v.v);
+          $('#c-sub', sheet).innerHTML = `${changeHtml(pct)} <span class="muted">${esc(fmtTime(v.t))}</span>`;
+        },
+        () => chart.type === 'candles',
+      );
+
+      // Live: Kopf jede Sekunde, Chart-Ende alle 2 Sekunden fortschreiben
+      const hook = () => {
+        if (!sheet.isConnected) {
+          liveSheetHooks.delete(hook);
+          syncLive();
+          return;
+        }
+        head();
+        paintPosition();
+        const p = priceOf(id);
+        if (!p?.live || chart.source !== 'binance' || !chart.data.length || chart.scrubbing) return;
+        const last = chart.data[chart.data.length - 1];
+        if (chart.type === 'candles') {
+          last.c = p.price;
+          last.h = Math.max(last.h, p.price);
+          last.l = Math.min(last.l, p.price);
+          chart.values[chart.values.length - 1].v = p.price;
+        } else {
+          last.v = p.price;
+        }
+        if (Date.now() - chart.lastDraw > 1900) draw();
+      };
+      liveSheetHooks.add(hook);
+
       const paintSeg = (box, attr, val) => box.querySelectorAll(`[data-${attr}]`).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset[attr] === val)));
       $('#c-range', sheet).addEventListener('click', (e) => {
         const b = e.target.closest('[data-range]');
@@ -737,20 +1000,29 @@ function openCoinSheet(id) {
         paintSeg($('#c-type', sheet), 'type', pref.type);
         loadChart();
       });
+      $('#c-fav', sheet).addEventListener('click', (e) => {
+        const on = toggleFavorite(coin);
+        e.currentTarget.setAttribute('aria-pressed', String(on));
+        navigator.vibrate?.(8);
+        toast(on ? `${coin.name} zu Favoriten hinzugefügt` : `${coin.name} aus Favoriten entfernt`);
+        if (state.tab === 'coins') renderCoinList();
+      });
       $('#c-buy', sheet).addEventListener('click', () => openTradeSheet(coin, 'buy', paintPosition));
       $('#c-sell', sheet).addEventListener('click', () => openTradeSheet(coin, 'sell', paintPosition));
+      head();
       paintPosition();
       loadChart();
-      // Aktuellen Kurs holen (falls aus der Suche oder veraltet)
-      Market.fetchPrices([id])
-        .then((p) => {
-          if (!p[id]) return;
-          coins.prices[id] = p[id];
-          $('#c-price', sheet).textContent = Crypto.formatPrice(p[id].price);
-          $('#c-sub', sheet).innerHTML = `${changeHtml(p[id].change24h)} <span class="muted">24 Std.</span>`;
-          paintPosition();
-        })
-        .catch(() => {});
+      // Ohne Live-Kurs: einmal aktuellen CoinGecko-Kurs holen (gebremst, still)
+      if (!priceOf(id)?.live && Market.cgReady()) {
+        Market.fetchPrices([id], { maxAgeMs: 60_000 })
+          .then((p) => {
+            if (!p[id]) return;
+            coins.prices[id] = p[id];
+            head();
+            paintPosition();
+          })
+          .catch(() => {});
+      }
     },
   });
 }
@@ -783,7 +1055,7 @@ function openTradeSheet(coin, side, onDone) {
     onMount(sheet, close) {
       const input = $('#t-input', sheet);
       let all = false;
-      const price = () => coins.prices[coin.id]?.price ?? coin.price ?? null;
+      const price = () => priceOf(coin.id)?.price ?? coin.price ?? null;
       const have = () => state.data.crypto.holdings[coin.id]?.qty || 0;
       const quote = () => {
         const raw = input.value.trim();
@@ -843,11 +1115,13 @@ function openTradeSheet(coin, side, onDone) {
         const go = $('#t-go', sheet);
         go.disabled = true;
         // Kurz vor dem Ausführen den aktuellen Kurs holen
-        try {
-          const p = await Market.fetchPrices([coin.id], { force: true });
-          if (p[coin.id]) coins.prices[coin.id] = p[coin.id];
-        } catch {
-          /* letzter bekannter Kurs */
+        if (!priceOf(coin.id)?.live && Market.cgReady()) {
+          try {
+            const p = await Market.fetchPrices([coin.id], { maxAgeMs: 20_000 });
+            if (p[coin.id]) coins.prices[coin.id] = p[coin.id];
+          } catch {
+            /* letzter bekannter Kurs */
+          }
         }
         const q = quote();
         if (!q.ok) {
@@ -2067,6 +2341,7 @@ function renderSettings() {
         <button type="button" class="settings-row" id="s-rec"><span class="ri">${icon('repeat', 18)}</span><span class="main">Geplant & Daueraufträge<span class="sub">${state.data.recurring.length} angelegt</span></span>${icon('chevronRight', 18)}</button>
         <button type="button" class="settings-row" id="s-importcard" role="switch" aria-checked="${!state.data.settings.hideImport}"><span class="ri">${icon('overview', 18)}</span><span class="main">Import-Karte auf Start<span class="sub">Aus = du trägst deine Zahlen selbst ein</span></span><span class="switch"></span></button>
         <button type="button" class="settings-row" id="s-coins" role="switch" aria-checked="${state.data.settings.coinsOnline}"><span class="ri">${icon('coin', 18)}</span><span class="main">Coin-Kurse laden<span class="sub">Öffentliche Kurse von CoinGecko – ohne deine Daten</span></span><span class="switch"></span></button>
+        <button type="button" class="settings-row" id="s-live" role="switch" aria-checked="${state.data.settings.liveOnline}"><span class="ri">${icon('trend', 18)}</span><span class="main">Live-Kurse jede Sekunde<span class="sub">Öffentlicher Kurs-Stream von Binance – ohne deine Daten</span></span><span class="switch"></span></button>
         <button type="button" class="settings-row" id="s-learned"><span class="ri">${icon('pencil', 18)}</span><span class="main">Gelernte Kategorien<span class="sub">${Object.keys(state.data.learned).length} Händler gemerkt</span></span>${icon('chevronRight', 18)}</button>
       </div>
 
@@ -2089,7 +2364,7 @@ function renderSettings() {
         <ul>
           <li>Alles wird nur lokal in diesem Browser auf deinem Gerät gespeichert.</li>
           <li>Kein Server, kein Konto, kein Tracking, keine Analytics, keine Cookies.</li>
-          <li>Einzige Ausnahme: Für den Bereich „Coins“ lädt Flowly öffentliche Kurse und Coin-Bilder von CoinGecko. Dabei werden keine deiner Daten übertragen (abschaltbar oben unter „Coin-Kurse laden“).</li>
+          <li>Einzige Ausnahme: Für den Bereich „Coins“ lädt Flowly öffentliche Kurse und Coin-Bilder von CoinGecko sowie Live-Kurse von Binance. Dabei werden keine deiner Daten übertragen – beides oben abschaltbar.</li>
           <li>Backups werden nur als Datei auf deinem Gerät abgelegt – nie hochgeladen.</li>
           <li>Importierte Dateien werden nur gelesen, nie verschickt.</li>
         </ul>
@@ -2127,6 +2402,14 @@ function mountSettings(sheet) {
         state.data.settings.coinsOnline = !state.data.settings.coinsOnline;
         e.currentTarget.setAttribute('aria-checked', String(state.data.settings.coinsOnline));
         saveState(state.data);
+        syncLive();
+      });
+      $('#s-live', sheet).addEventListener('click', (e) => {
+        state.data.settings.liveOnline = !state.data.settings.liveOnline;
+        e.currentTarget.setAttribute('aria-checked', String(state.data.settings.liveOnline));
+        coins.links.clear();
+        saveState(state.data);
+        syncLive();
       });
       $('#s-importcard', sheet).addEventListener('click', (e) => {
         const b = e.currentTarget;
@@ -2271,6 +2554,12 @@ document.addEventListener('click', (e) => {
       break;
     case 'coin':
       openCoinSheet(el.dataset.id);
+      break;
+    case 'coin-tab':
+      state.data.crypto.listTab = el.dataset.tab;
+      saveState(state.data);
+      document.querySelectorAll('.chip-row [data-tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === el.dataset.tab)));
+      renderCoinList();
       break;
     case 'coins-on':
       state.data.settings.coinsOnline = true;

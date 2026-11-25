@@ -58,7 +58,49 @@ export function formatChange(pct) {
 /* ---------- Depot ---------- */
 
 export function createCryptoState() {
-  return { holdings: {}, trades: [], chart: 'line' };
+  return { holdings: {}, trades: [], chart: 'line', favorites: [], listTab: 'trending' };
+}
+
+/** Marktkapitalisierung kurz: 1.700.000 -> „1,7 Mio. €“ */
+export function formatCompactEur(eur) {
+  if (eur == null || !Number.isFinite(eur) || eur <= 0) return '';
+  const steps = [
+    [1e12, 'Bio.'],
+    [1e9, 'Mrd.'],
+    [1e6, 'Mio.'],
+    [1e3, 'Tsd.'],
+  ];
+  for (const [v, unit] of steps) {
+    if (eur >= v) {
+      const n = eur / v;
+      return `${nf(0, n >= 100 ? 0 : 1).format(n)}\u00A0${unit}\u00A0€`;
+    }
+  }
+  return `${nf(0, 0).format(eur)}\u00A0€`;
+}
+
+export const LIST_TABS = [
+  { id: 'favorites', label: 'Favoriten' },
+  { id: 'trending', label: 'Trending' },
+  { id: 'majors', label: 'Majors' },
+  { id: 'gainers', label: 'Gewinner' },
+  { id: 'losers', label: 'Verlierer' },
+];
+
+/**
+ * Liste für einen Reiter sortieren. markets/trending: normalisierte Listen; priceOf(id) -> {price, change24h}.
+ */
+export function sortForTab(tab, { markets = [], trending = [], favorites = [], priceOf = () => null }) {
+  const withLive = (c) => {
+    const p = priceOf(c.id);
+    return { ...c, price: p?.price ?? c.price ?? null, change24h: p?.change24h ?? c.change24h ?? null };
+  };
+  if (tab === 'favorites') return favorites.map((f) => withLive({ ...f, ...(markets.find((m) => m.id === f.id) || {}) }));
+  if (tab === 'trending') return trending.map(withLive);
+  if (tab === 'majors') return markets.slice(0, 100).map(withLive);
+  const ranked = markets.map(withLive).filter((c) => c.change24h != null);
+  ranked.sort((a, b) => (tab === 'losers' ? a.change24h - b.change24h : b.change24h - a.change24h));
+  return ranked.slice(0, 50);
 }
 
 /** Wert eines Bestands in Cent. */
@@ -185,6 +227,15 @@ export function sanitizeCrypto(raw) {
   const out = createCryptoState();
   if (!raw || typeof raw !== 'object') return out;
   out.chart = raw.chart === 'candles' ? 'candles' : 'line';
+  out.listTab = LIST_TABS.some((t) => t.id === raw.listTab) ? raw.listTab : 'trending';
+  if (Array.isArray(raw.favorites)) {
+    const seen = new Set();
+    for (const f of raw.favorites.slice(0, 200)) {
+      if (!f || !validId(f.id) || seen.has(f.id)) continue;
+      seen.add(f.id);
+      out.favorites.push({ id: f.id, symbol: cleanStr(f.symbol, 15).toUpperCase(), name: cleanStr(f.name, 60), image: validImg(f.image) });
+    }
+  }
   if (raw.holdings && typeof raw.holdings === 'object') {
     for (const [id, h] of Object.entries(raw.holdings)) {
       if (!validId(id) || !h || !(h.qty > 0) || !Number.isFinite(h.qty)) continue;
@@ -249,9 +300,31 @@ export function normalizeSimplePrices(json) {
   const out = {};
   if (!json || typeof json !== 'object') return out;
   for (const [id, v] of Object.entries(json)) {
-    if (validId(id) && v && Number.isFinite(v.eur)) out[id] = { price: v.eur, change24h: Number.isFinite(v.eur_24h_change) ? v.eur_24h_change : null };
+    if (validId(id) && v && Number.isFinite(v.eur)) {
+      out[id] = { price: v.eur, change24h: Number.isFinite(v.eur_24h_change) ? v.eur_24h_change : null, marketCap: Number.isFinite(v.eur_market_cap) && v.eur_market_cap > 0 ? v.eur_market_cap : null };
+    }
   }
   return out;
+}
+
+/** CoinGecko „Trending“ (Reihenfolge = Trend-Rang). */
+export function normalizeTrending(json) {
+  const list = Array.isArray(json?.coins) ? json.coins : [];
+  return list
+    .map((x) => x?.item)
+    .filter((c) => c && validId(c.id))
+    .slice(0, 30)
+    .map((c, i) => ({
+      id: c.id,
+      symbol: cleanStr(c.symbol, 15).toUpperCase(),
+      name: cleanStr(c.name, 60),
+      image: validImg(c.large || c.small || c.thumb),
+      rank: Number.isFinite(c.market_cap_rank) ? c.market_cap_rank : null,
+      trendRank: i + 1,
+      price: null,
+      change24h: Number.isFinite(c.data?.price_change_percentage_24h?.eur) ? c.data.price_change_percentage_24h.eur : null,
+      marketCap: null,
+    }));
 }
 
 export function normalizeLine(json) {

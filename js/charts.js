@@ -266,12 +266,19 @@ export function coinCandleChart(candles) {
 }
 
 /** Fingerbewegung über dem Chart: Kurs an der Stelle anzeigen. values: [{t, v}] */
-export function attachCoinScrub(box, values, onChange, centered = false) {
-  if (!box || values.length < 2) return;
+/**
+ * Fingerbewegung über dem Chart. Wird einmal angehängt; getValues/getCentered liefern den aktuellen Stand,
+ * damit sich der Chart live neu zeichnen kann, ohne die Bedienung zu verlieren.
+ */
+export function attachCoinScrub(box, getValues, onChange, getCentered = () => false) {
+  if (!box) return;
   const cursor = document.createElement('div');
   cursor.className = 'coin-cursor';
   box.appendChild(cursor);
   const show = (e) => {
+    const values = getValues();
+    if (!values || values.length < 2) return;
+    const centered = getCentered();
     const rect = box.getBoundingClientRect();
     const f = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     const i = centered ? Math.min(values.length - 1, Math.floor(f * values.length)) : Math.round(f * (values.length - 1));

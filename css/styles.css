@@ -1045,3 +1045,39 @@ html { height: 100%; }
 .chip.on { background: var(--pill-on); color: var(--pill-on-text); border-color: transparent; }
 .btn[disabled] { opacity: 0.45; pointer-events: none; }
 .hero-delta.static { display: inline-block; }
+
+/* ---------- Coins 2.0 (wie Phantom) ---------- */
+.chip-row { display: flex; gap: 8px; margin: 14px -16px 6px; padding: 0 16px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.chip-row::-webkit-scrollbar { display: none; }
+.mchip {
+  flex: none; height: 44px; padding: 0 18px; border-radius: 999px;
+  background: #191D27; color: var(--muted); font-weight: 700; font-size: 15px;
+  transition: background 0.2s, color 0.2s, transform 0.15s var(--ease);
+}
+.mchip.icon { width: 44px; padding: 0; display: grid; place-items: center; }
+.mchip[aria-selected="true"] { background: #E8EAF0; color: #0B0D12; }
+.mchip.icon[aria-selected="true"] .ico { fill: currentColor; }
+.mchip:active { transform: scale(0.95); }
+.coin-list { margin-top: 2px; }
+.row.coin-row.flat { min-height: 72px; padding: 10px 4px; margin: 0; width: 100%; border-radius: 16px; }
+.row.coin-row.flat:active { background: #12161E; }
+.row.coin-row.flat .title { font-size: 17px; font-weight: 700; }
+.row.coin-row.flat .sub { font-size: 14px; }
+.coin-right .price { font-size: 17px; font-weight: 600; transition: color 0.5s ease; }
+.coin-right .chg { font-size: 15px; }
+.price.tick-up { animation: tickUp 0.9s ease; }
+.price.tick-down { animation: tickDown 0.9s ease; }
+@keyframes tickUp { 0% { color: var(--positive); } 100% { color: var(--text); } }
+@keyframes tickDown { 0% { color: var(--danger); } 100% { color: var(--text); } }
+.coin-icon-wrap { position: relative; flex: none; display: inline-block; }
+.rank-badge {
+  position: absolute; right: -4px; bottom: -4px; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; font-style: normal; font-size: 12px; font-weight: 800; color: #1a1200;
+  background: #F5C84B; box-shadow: 0 0 0 2px var(--bg);
+}
+.rank-badge.r2 { background: #C9CED8; color: #15181f; }
+.rank-badge.r3 { background: #E07A4F; color: #fff; }
+.coin-head .fav-btn { margin-left: auto; color: var(--muted); }
+.coin-head .fav-btn[aria-pressed="true"] { color: #F472B6; }
+.coin-head .fav-btn[aria-pressed="true"] .ico { fill: currentColor; }
+.coin-svg { position: absolute; inset: 0; }
