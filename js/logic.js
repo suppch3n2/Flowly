@@ -478,6 +478,7 @@ export function sanitizeData(raw) {
     if (mk) tx.mkey = mk;
     if (typeof t.rid === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(t.rid)) tx.rid = t.rid;
     if (t.auto === true) tx.auto = true;
+    if (t.hidden === true) tx.hidden = true;
     out.transactions.push(tx);
   }
 

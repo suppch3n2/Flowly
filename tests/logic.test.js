@@ -214,3 +214,19 @@ test('Beispieldaten sind gültig und enden heute', () => {
   // Jeder Monat hat Gehalt
   for (const m of months) assert.ok(L.monthSummary(data.transactions, m).income >= 285000);
 });
+
+test('Ausgeblendete Umsätze bleiben gespeichert und zählen weiter im Kontostand', () => {
+  const data = L.sanitizeData({
+    settings: { startBalance: 10000 },
+    transactions: [
+      { id: 'a', type: 'expense', amount: 2500, category: 'freizeit', date: '2026-11-20', hidden: true },
+      { id: 'b', type: 'income', amount: 1000, category: 'gehalt', date: '2026-11-20', hidden: 'ja' },
+    ],
+  });
+  assert.equal(data.transactions[0].hidden, true);
+  assert.equal(data.transactions[1].hidden, undefined);
+  assert.equal(L.balanceUntil(data.transactions, data.settings.startBalance, '2026-11-30'), 10000 - 2500 + 1000);
+  // Löschen der Ausgabe bringt das Geld zurück
+  const rest = data.transactions.filter((t) => t.id !== 'a');
+  assert.equal(L.balanceUntil(rest, data.settings.startBalance, '2026-11-30'), 11000);
+});

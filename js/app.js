@@ -33,6 +33,7 @@ const state = {
   month: L.monthKeyOf(L.todayISO()),
   txFilter: 'all',
   txQuery: '',
+  showHidden: false,
   scroll: {},
 };
 const canStore = storageAvailable();
@@ -73,9 +74,9 @@ function txRow(t, { showDate = false } = {}) {
   const subParts = [t.note ? cat.label : isIn ? 'Einnahme' : 'Ausgabe'];
   if (showDate) subParts.push(shortDay(t.date));
   if (t.src && SOURCE_LABEL[t.src]) subParts.push(SOURCE_LABEL[t.src]);
-  return `<li><button type="button" class="row tile" data-action="edit-tx" data-id="${esc(t.id)}">
+  return `<li><button type="button" class="row tile${t.hidden ? ' is-hidden' : ''}" data-action="edit-tx" data-id="${esc(t.id)}">
     ${catIcon(cat)}
-    <span class="main"><span class="title">${title}</span><span class="sub">${esc(subParts.join(' · '))}</span></span>
+    <span class="main"><span class="title">${t.hidden ? icon('eyeOff', 14, 'inline') + ' ' : ''}${title}</span><span class="sub">${esc(subParts.join(' · '))}</span></span>
     <span class="amount ${isIn ? 'in' : 'out'}">${money(isIn ? t.amount : -t.amount, { signed: true })}</span>
   </button></li>`;
 }
@@ -176,7 +177,8 @@ function renderStart() {
   // Mit Limit: Kontostand minus Limit. Ohne Limit: Plus/Minus des Monats. Immer nur Vorzeichen + Zahl.
   const delta = settings.monthlyLimit ? balance - limit : month.net;
   const tone = delta < 0 ? 'neg' : 'pos';
-  const recent = L.sortTransactions(transactions.filter((t) => t.date <= today)).slice(0, 8);
+  const recent = L.sortTransactions(transactions.filter((t) => t.date <= today && !t.hidden)).slice(0, 8);
+  const hiddenCount = transactions.filter((t) => t.hidden).length;
   const name = settings.name.trim();
 
   return `<div class="stack">
@@ -190,8 +192,12 @@ function renderStart() {
     ${settings.hideImport ? '' : importCard()}
 
     <section>
-      <button type="button" class="section-link" data-action="tab" data-tab="numbers">Letzte Umsätze ${icon('chevronRight', 20)}</button>
+      <div class="section-head">
+        <button type="button" class="section-link" data-action="tab" data-tab="numbers">Letzte Umsätze ${icon('chevronRight', 20)}</button>
+        <button type="button" class="edit-link" data-action="edit-mode">Bearbeiten</button>
+      </div>
       <ul class="tx-list tiles">${recent.map((t) => txRow(t, { showDate: true })).join('')}</ul>
+      ${hiddenCount ? `<button type="button" class="hidden-hint" data-action="show-hidden">${icon('eyeOff', 14)}${hiddenCount} ausgeblendet</button>` : ''}
     </section>
   </div>`;
 }
@@ -298,7 +304,10 @@ function renderNumbers() {
     </button>
 
     <section>
-      <h3 class="section-link static">Alle Umsätze</h3>
+      <div class="section-head">
+        <h3 class="section-link static">Alle Umsätze</h3>
+        <button type="button" class="edit-link" data-action="edit-mode">Bearbeiten</button>
+      </div>
       <div class="seg" role="group" aria-label="Filter" style="margin:0 0 14px">
         <span class="thumb" style="width:calc((100% - 8px) / 3);transform:translateX(${idx * 100}%)"></span>
         ${filters.map(([id, label]) => `<button type="button" data-action="tx-filter" data-filter="${id}" aria-pressed="${state.txFilter === id}">${label}</button>`).join('')}
@@ -432,9 +441,14 @@ function openLimitSheet() {
 }
 
 function renderTxResults() {
-  const list = L.filterTransactions(state.data.transactions, { type: state.txFilter, query: state.txQuery });
+  const all = L.filterTransactions(state.data.transactions, { type: state.txFilter, query: state.txQuery });
+  const hiddenCount = all.filter((t) => t.hidden).length;
+  const list = state.showHidden ? all : all.filter((t) => !t.hidden);
+  const hint = hiddenCount
+    ? `<button type="button" class="hidden-hint" data-action="toggle-hidden">${icon(state.showHidden ? 'eye' : 'eyeOff', 14)}${hiddenCount} ausgeblendet${state.showHidden ? ' · verbergen' : ''}</button>`
+    : '';
   if (!list.length) {
-    return emptyState({ title: 'Nichts gefunden', art: 'search', text: 'Keine Buchung passt zu deiner Suche oder deinem Filter.', small: true });
+    return emptyState({ title: 'Nichts gefunden', art: 'search', text: 'Keine Buchung passt zu deiner Suche oder deinem Filter.', small: true }) + hint;
   }
   const groups = L.groupByDate(list);
   const shown = groups.slice(0, 120);
@@ -445,7 +459,161 @@ function renderTxResults() {
         <ul class="tx-list tiles">${g.items.map((t) => txRow(t)).join('')}</ul>
       </section>`,
     )
-    .join('') + (groups.length > shown.length ? `<p class="settings-note">Ältere Buchungen: bitte die Suche verwenden.</p>` : '');
+    .join('') + (groups.length > shown.length ? `<p class="settings-note">Ältere Buchungen: bitte die Suche verwenden.</p>` : '') + hint;
+}
+
+/* ---------- Umsätze bearbeiten: löschen & ausblenden ---------- */
+
+/** Wie ändert sich der Kontostand, wenn diese Umsätze gelöscht werden? (+ = Geld zurück) */
+function deleteEffect(list) {
+  return list.reduce((sum, t) => sum + (t.type === 'expense' ? t.amount : -t.amount), 0);
+}
+
+/** Löscht Umsätze; Coin-Käufe/-Verkäufe werden im Depot zurückgebucht. Gibt { deleted, blocked } zurück. */
+function deleteTransactions(ids) {
+  const set = new Set(ids);
+  const blocked = [];
+  for (const t of state.data.transactions) {
+    if (!set.has(t.id) || t.src !== 'crypto') continue;
+    const tradeId = (t.extId || '').replace(/^crypto:/, '');
+    if (state.data.crypto.trades.some((x) => x.id === tradeId) && !Crypto.revertTrade(state.data.crypto, tradeId)) {
+      set.delete(t.id);
+      blocked.push(t);
+    }
+  }
+  const deleted = state.data.transactions.filter((t) => set.has(t.id));
+  state.data.transactions = state.data.transactions.filter((t) => !set.has(t.id));
+  return { deleted, blocked };
+}
+
+function openEditMode() {
+  const selected = new Set();
+  let filter = 'all';
+  const rowHtml = (t) => {
+    const cat = L.getCategory(t.type, t.category);
+    const isIn = t.type === 'income';
+    const on = selected.has(t.id);
+    return `<button type="button" class="em-row${on ? ' on' : ''}${t.hidden ? ' is-hidden' : ''}" data-em="${esc(t.id)}" aria-pressed="${on}">
+      <span class="em-check">${icon('check', 16)}</span>
+      ${catIcon(cat, 18)}
+      <span class="main"><span class="title">${t.hidden ? icon('eyeOff', 13, 'inline') + ' ' : ''}${esc(t.note || cat.label)}</span><span class="sub">${esc(shortDay(t.date))} · ${esc(cat.label)}</span></span>
+      <span class="amount ${isIn ? 'in' : 'out'}">${money(isIn ? t.amount : -t.amount, { signed: true })}</span>
+    </button>`;
+  };
+  const listFor = () => {
+    let list = L.sortTransactions(state.data.transactions);
+    if (filter === 'hidden') list = list.filter((t) => t.hidden);
+    else if (filter !== 'all') list = list.filter((t) => t.type === filter);
+    return list.slice(0, 500);
+  };
+  const listHtml = () => {
+    const list = listFor();
+    if (!list.length) return `<p class="settings-note">Keine Umsätze.</p>`;
+    let html = '';
+    let day = '';
+    for (const t of list) {
+      if (t.date !== day) {
+        day = t.date;
+        html += `<div class="em-day">${esc(L.dayLabel(t.date))}</div>`;
+      }
+      html += rowHtml(t);
+    }
+    return html;
+  };
+  const hiddenTotal = () => state.data.transactions.filter((t) => t.hidden).length;
+
+  openSheet({
+    title: 'Umsätze bearbeiten',
+    body: `
+      <p class="muted" style="margin:0;font-size:14px">Tippe Umsätze an, um sie auszuwählen. <b>Löschen</b> entfernt sie und korrigiert deinen Kontostand. <b>Ausblenden</b> versteckt sie nur in den Listen – im Kontostand zählen sie weiter.</p>
+      <div class="chip-row em-filters" role="tablist">
+        <button type="button" class="mchip small" data-emf="all" aria-selected="true">Alle</button>
+        <button type="button" class="mchip small" data-emf="expense" aria-selected="false">Ausgaben</button>
+        <button type="button" class="mchip small" data-emf="income" aria-selected="false">Einnahmen</button>
+        <button type="button" class="mchip small" data-emf="hidden" aria-selected="false" id="em-hidden-chip">${icon('eyeOff', 15, 'inline')} Ausgeblendet (${hiddenTotal()})</button>
+      </div>
+      <div class="em-tools"><span id="em-count">Nichts ausgewählt</span><button type="button" class="link" id="em-all">Alle auswählen</button></div>
+      <div class="em-list" id="em-list">${listHtml()}</div>
+      <div class="sheet-cta em-actions">
+        <button type="button" class="btn" id="em-hide" disabled>${icon('eyeOff', 20)}<span>Ausblenden</span></button>
+        <button type="button" class="btn danger solid" id="em-delete" disabled>${icon('trash', 20)}<span>Löschen</span></button>
+      </div>`,
+    onMount(sheet) {
+      const listEl = $('#em-list', sheet);
+      const paint = () => {
+        const n = selected.size;
+        const sel = state.data.transactions.filter((t) => selected.has(t.id));
+        const allHidden = n > 0 && sel.every((t) => t.hidden);
+        $('#em-count', sheet).textContent = n ? `${n} ausgewählt · Kontostand ${money(deleteEffect(sel), { signed: true })} beim Löschen` : 'Nichts ausgewählt';
+        const visible = listFor();
+        $('#em-all', sheet).textContent = visible.length && visible.every((t) => selected.has(t.id)) ? 'Keine auswählen' : 'Alle auswählen';
+        $('#em-hide', sheet).disabled = !n;
+        $('#em-hide span', sheet).textContent = allHidden ? 'Einblenden' : 'Ausblenden';
+        $('#em-hide', sheet).querySelector('.ico').outerHTML = icon(allHidden ? 'eye' : 'eyeOff', 20);
+        $('#em-delete', sheet).disabled = !n;
+        $('#em-delete span', sheet).textContent = n ? `Löschen (${n})` : 'Löschen';
+        $('#em-hidden-chip', sheet).innerHTML = `${icon('eyeOff', 15, 'inline')} Ausgeblendet (${hiddenTotal()})`;
+      };
+      const repaintList = () => {
+        listEl.innerHTML = listHtml();
+        paint();
+      };
+      listEl.addEventListener('click', (e) => {
+        const row = e.target.closest('[data-em]');
+        if (!row) return;
+        const id = row.dataset.em;
+        if (selected.has(id)) selected.delete(id);
+        else selected.add(id);
+        row.classList.toggle('on', selected.has(id));
+        row.setAttribute('aria-pressed', String(selected.has(id)));
+        paint();
+      });
+      $('.em-filters', sheet).addEventListener('click', (e) => {
+        const b = e.target.closest('[data-emf]');
+        if (!b) return;
+        filter = b.dataset.emf;
+        sheet.querySelectorAll('[data-emf]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+        repaintList();
+      });
+      $('#em-all', sheet).addEventListener('click', () => {
+        const visible = listFor();
+        const allOn = visible.length && visible.every((t) => selected.has(t.id));
+        visible.forEach((t) => (allOn ? selected.delete(t.id) : selected.add(t.id)));
+        repaintList();
+      });
+      $('#em-hide', sheet).addEventListener('click', () => {
+        const sel = state.data.transactions.filter((t) => selected.has(t.id));
+        if (!sel.length) return;
+        const show = sel.every((t) => t.hidden);
+        sel.forEach((t) => {
+          if (show) delete t.hidden;
+          else t.hidden = true;
+        });
+        selected.clear();
+        commit(show ? `${sel.length} ${sel.length === 1 ? 'Umsatz' : 'Umsätze'} wieder eingeblendet` : `${sel.length} ${sel.length === 1 ? 'Umsatz' : 'Umsätze'} ausgeblendet`);
+        repaintList();
+      });
+      $('#em-delete', sheet).addEventListener('click', async () => {
+        const sel = state.data.transactions.filter((t) => selected.has(t.id));
+        if (!sel.length) return;
+        const eff = deleteEffect(sel);
+        const ok = await confirmDialog({
+          title: sel.length === 1 ? 'Umsatz löschen?' : `${sel.length} Umsätze löschen?`,
+          message: `${sel.length === 1 ? 'Der Umsatz wird' : 'Die Umsätze werden'} endgültig entfernt. Dein Kontostand ändert sich dadurch um ${money(eff, { signed: true })}.`,
+          confirmLabel: 'Löschen',
+          danger: true,
+        });
+        if (!ok) return;
+        const { deleted, blocked } = deleteTransactions(sel.map((t) => t.id));
+        selected.clear();
+        const realEff = deleteEffect(deleted);
+        commit(`${deleted.length} gelöscht · Kontostand ${money(realEff, { signed: true })}`);
+        if (blocked.length) setTimeout(() => toast(`${blocked.length} Coin-Kauf nicht gelöscht – die Coins sind schon verkauft.`, true), 2600);
+        repaintList();
+      });
+      paint();
+    },
+  });
 }
 
 /* ---------- Coins (Spielgeld; Kurse von CoinGecko + Live-Kurse von Binance) ---------- */
@@ -1616,6 +1784,7 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
     </div>
     <button type="button" class="btn primary block" id="f-save">${icon('check', 20)}${mode === 'tx-edit' || mode === 'rule-edit' ? 'Änderungen speichern' : isRule ? 'Dauerauftrag speichern' : 'Buchung speichern'}</button>
     ${mode === 'tx-edit' && ruleOfTx ? `<button type="button" class="btn block" id="f-rule">${icon('repeat', 20)}Dauerauftrag bearbeiten</button>` : ''}
+    ${mode === 'tx-edit' ? `<button type="button" class="btn block" id="f-hide">${icon(tx.hidden ? 'eye' : 'eyeOff', 20)}${tx.hidden ? 'Wieder einblenden' : 'Ausblenden'}</button>` : ''}
     ${mode === 'tx-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}Buchung löschen</button>` : ''}
     ${mode === 'rule-edit' ? `<button type="button" class="btn danger block" id="f-delete">${icon('trash', 20)}${rule.interval === 'once' ? 'Geplante Buchung löschen' : 'Dauerauftrag löschen'}</button>` : ''}`;
 
@@ -1826,16 +1995,25 @@ function openEntrySheet({ tx = null, rule = null, newRule = false, once = false 
           close();
           return commit(rule.interval === 'once' ? 'Geplante Buchung gelöscht' : 'Dauerauftrag gelöscht');
         }
+        const eff = deleteEffect([tx]);
         const ok = await confirmDialog({
           title: 'Buchung löschen?',
-          message: `${tx.note || L.getCategory(tx.type, tx.category).label} über ${money(tx.amount)} wird endgültig entfernt.`,
+          message: `${tx.note || L.getCategory(tx.type, tx.category).label} über ${money(tx.amount)} wird endgültig entfernt. Dein Kontostand ändert sich um ${money(eff, { signed: true })}.`,
           confirmLabel: 'Löschen',
           danger: true,
         });
         if (!ok) return;
-        state.data.transactions = state.data.transactions.filter((x) => x.id !== tx.id);
+        deleteTransactions([tx.id]);
         close();
-        commit('Buchung gelöscht');
+        commit(`Buchung gelöscht · Kontostand ${money(eff, { signed: true })}`);
+      });
+      $('#f-hide', sheet)?.addEventListener('click', () => {
+        const t = state.data.transactions.find((x) => x.id === tx.id);
+        if (!t) return close();
+        if (t.hidden) delete t.hidden;
+        else t.hidden = true;
+        close();
+        commit(t.hidden ? 'Ausgeblendet – zählt weiter im Kontostand' : 'Wieder eingeblendet');
       });
     },
   });
@@ -2556,6 +2734,18 @@ document.addEventListener('click', (e) => {
       break;
     case 'coin':
       openCoinSheet(el.dataset.id);
+      break;
+    case 'edit-mode':
+      openEditMode();
+      break;
+    case 'show-hidden':
+      state.showHidden = true;
+      switchTab('numbers');
+      render();
+      break;
+    case 'toggle-hidden':
+      state.showHidden = !state.showHidden;
+      render();
       break;
     case 'coin-tab':
       state.data.crypto.listTab = el.dataset.tab;

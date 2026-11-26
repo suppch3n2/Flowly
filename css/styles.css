@@ -1082,3 +1082,33 @@ html { height: 100%; }
 .coin-head .fav-btn[aria-pressed="true"] .ico { fill: currentColor; }
 .coin-svg { position: absolute; inset: 0; }
 .views.bouncing { transition: none; }
+
+/* ---------- Umsätze bearbeiten / ausblenden ---------- */
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.section-head .section-link { margin-right: auto; }
+.edit-link { min-height: 44px; padding: 0 4px; color: var(--accent); font-weight: 600; font-size: 15px; }
+.row.tile.is-hidden { opacity: 0.45; }
+.hidden-hint {
+  display: inline-flex; align-items: center; gap: 6px; margin: 10px auto 0; min-height: 36px; padding: 0 12px;
+  border-radius: 999px; color: var(--faint); font-size: 13px; font-weight: 500;
+}
+section > .hidden-hint, #tx-results > .hidden-hint { display: flex; width: fit-content; }
+.hidden-hint:active { background: var(--card); }
+.mchip.small { height: 38px; padding: 0 14px; font-size: 14px; display: inline-flex; align-items: center; gap: 4px; }
+.em-filters { margin: 0 -20px !important; padding: 0 20px; }
+.em-tools { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 8px !important; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.em-tools .link { color: var(--accent); font-weight: 600; min-height: 40px; flex: none; }
+.em-list { margin-top: 4px !important; }
+.em-day { padding: 12px 2px 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.em-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 60px; padding: 8px 6px; border-radius: 14px; text-align: left; transition: background 0.15s; }
+.em-row.on { background: rgba(139, 124, 246, 0.12); }
+.em-row.is-hidden .main, .em-row.is-hidden .amount, .em-row.is-hidden .cat-icon { opacity: 0.5; }
+.em-row .cat-icon { width: 36px; height: 36px; border-radius: 50%; }
+.em-row .main { flex: 1; min-width: 0; }
+.em-row .title, .em-row .sub { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.em-row .title { font-weight: 600; }
+.em-row .sub { color: var(--muted); font-size: 13px; }
+.em-row .amount { font-size: 14px; }
+.em-check { width: 24px; height: 24px; flex: none; border-radius: 50%; border: 2px solid #3A4254; display: grid; place-items: center; color: transparent; transition: background 0.15s, border-color 0.15s; }
+.em-row.on .em-check { background: var(--accent); border-color: var(--accent); color: #fff; }
+.em-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
